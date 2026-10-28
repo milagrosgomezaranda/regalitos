@@ -6,7 +6,7 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const supabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const supabase = supabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-const state = { user: null, gifts: [], filter: 'mami', occasion: 'Navidad', loading: false };
+const state = { user: null, gifts: [], filter: 'mami', occasion: 'Navidad', loading: false, saving: false };
 const app = document.querySelector('#app');
 
 const money = (value) => value === null || value === undefined || value === '' ? 'Precio sin cargar' :
@@ -35,8 +35,7 @@ function render() {
       <main class="auth-wrap">
         <section class="auth-card">
           <p class="eyebrow">SOLO PARA NOSOTROS</p>
-          <h1>Nuestra lista de regalos</h1>
-          <p class="subtitle">Ideas para sorprendernos, sin andar buscando links por todos lados.</p>
+          <h1>Regalitos para nosotros 🫰🏼</h1>
           <form id="auth-form">
             <label>Email<input name="email" type="email" placeholder="tu@email.com" required autocomplete="email"></label>
             <label>Contraseña<input name="password" type="password" placeholder="Mínimo 8 caracteres" required minlength="8" autocomplete="current-password"></label>
@@ -76,20 +75,16 @@ function render() {
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
-        <div><p class="eyebrow">SOLO PARA NOSOTROS</p><h1>Nuestra lista de regalos</h1></div>
+        <div><p class="eyebrow">LISTA COMPARTIDA</p><h1>Regalitos para nosotros 🫰🏼</h1></div>
         <button class="logout" id="logout">Salir</button>
       </header>
-      <section class="intro"><p>Ideas para sorprendernos.</p><label class="occasion-label">Próxima ocasión
-        <select id="occasion"><option ${state.occasion==='Navidad'?'selected':''}>Navidad</option><option ${state.occasion==='Cumpleaños'?'selected':''}>Cumpleaños</option><option ${state.occasion==='Aniversario'?'selected':''}>Aniversario</option><option ${state.occasion==='Otra ocasión'?'selected':''}>Otra ocasión</option></select>
-      </label></section>
       <nav class="tabs">${personTabs}</nav>
-      <section class="section-heading"><div><p class="eyebrow">LISTA COMPARTIDA</p><h2>${personLabel(state.filter)}</h2></div><button class="primary add-button" id="add-gift">+ Agregar regalo</button></section>
+      <section class="section-heading"><h2>${personLabel(state.filter)}</h2><button class="primary add-button" id="add-gift">＋ Agregar regalo</button></section>
       <div id="gift-form-wrap"></div>
       ${content || '<div class="empty"><div class="empty-icon">＋</div><h3>Todavía no hay regalos</h3><p>Agregá un link y armá la lista entre los dos.</p></div>'}
       <footer>Los cambios se guardan online para los dos.</footer>
     </div>`;
   document.querySelectorAll('[data-person]').forEach(b => b.addEventListener('click', () => { state.filter = b.dataset.person; render(); }));
-  document.querySelector('#occasion').addEventListener('change', e => { state.occasion = e.target.value; });
   document.querySelector('#logout').addEventListener('click', async () => { await supabase.auth.signOut(); });
   document.querySelector('#add-gift').addEventListener('click', showGiftForm);
   document.querySelectorAll('[data-delete]').forEach(b => b.addEventListener('click', () => deleteGift(b.dataset.delete)));
@@ -97,11 +92,11 @@ function render() {
 }
 
 function renderParent(gifts) {
-  const groups = ['barato','mediano','caro'];
-  return groups.map(cat => {
+  return ['barato','mediano','caro'].map(cat => {
     const items = gifts.filter(g => g.category === cat);
-    return `<section class="category"><div class="category-title"><h3>${categoryLabel(cat)}</h3><span>${items.length} ${items.length === 1 ? "regalo" : "regalos"}</span></div>
-      ${items.length ? `<div class="gift-grid">${items.map(giftCard).join('')}</div>` : `<p class="empty-inline">Todavía no cargaron regalos en esta categoría.</p>`}</section>`;
+    if (!items.length) return '';
+    return `<section class="category"><div class="category-title"><h3>${categoryLabel(cat)}</h3><span>${items.length} ${items.length === 1 ? 'regalo' : 'regalos'}</span></div>
+      <div class="gift-grid">${items.map(giftCard).join('')}</div></section>`;
   }).join('');
 }
 function renderChunguita(gifts) {
@@ -122,11 +117,12 @@ function showGiftForm(gift = null) {
   document.querySelector('#gift-form-wrap').innerHTML = `<form id="gift-form" class="gift-form">
     <div class="form-top"><h3>${gift ? 'Editar regalo' : 'Agregar regalo'}</h3><button type="button" class="close-form" id="close-form" aria-label="Cerrar">×</button></div>
     <label>Link del producto<input name="product_url" type="url" placeholder="https://..." value="${escapeHtml(gift?.product_url || '')}"></label>
-    <button class="secondary" type="button" id="fetch-product">Buscar foto y datos del link</button>
+    <button class="secondary" type="button" id="fetch-product">Completar con datos de la tienda</button>
     <p id="fetch-message" class="small"></p>
     <div class="form-grid"><label>Nombre<input name="title" required placeholder="Ej. Auriculares" value="${escapeHtml(gift?.title || '')}"></label>
     <label>Precio en pesos<input name="price" type="number" min="0" step="1" placeholder="180000" value="${gift?.price ?? ''}"></label></div>
     <label>URL de la foto<input name="image_url" type="url" placeholder="Se completa al buscar el link" value="${escapeHtml(gift?.image_url || '')}"></label>
+    <div class="photo-preview" id="photo-preview" ${gift?.image_url ? '' : 'hidden'}><img id="photo-preview-img" src="${escapeHtml(gift?.image_url || '')}" alt="Vista previa de la foto"><span>Vista previa de la foto</span></div>
     ${!isChunguita ? `<div class="form-grid"><label>Categoría<select name="category" required><option value="barato" ${gift?.category==='barato'?'selected':''}>Barato</option><option value="mediano" ${gift?.category==='mediano'?'selected':''}>Mediano</option><option value="caro" ${gift?.category==='caro'?'selected':''}>Caro</option></select></label>
     <label>Prioridad<select name="priority" required><option value="1" ${String(gift?.priority||1)==='1'?'selected':''}>1 · El que más quiero</option><option value="2" ${String(gift?.priority||1)==='2'?'selected':''}>2 · También me gusta</option><option value="3" ${String(gift?.priority||1)==='3'?'selected':''}>3 · Otra opción</option></select></label></div>` : `<input type="hidden" name="category" value="ninguna"><input type="hidden" name="priority" value="">`}
     <label>Nota (opcional)<textarea name="notes" rows="2" placeholder="Color, talle, modelo...">${escapeHtml(gift?.notes || '')}</textarea></label>
@@ -134,20 +130,28 @@ function showGiftForm(gift = null) {
   </form>`;
   document.querySelector('#close-form').addEventListener('click', () => document.querySelector('#gift-form-wrap').innerHTML = '');
   document.querySelector('#fetch-product').addEventListener('click', fetchProduct);
+  const photoInput = document.querySelector('#gift-form [name="image_url"]');
+  photoInput.addEventListener('input', updatePhotoPreview);
+  photoInput.addEventListener('change', updatePhotoPreview);
   document.querySelector('#gift-form').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
+    if (!state.user?.id) { document.querySelector('#save-message').textContent = 'Tu sesión venció. Volvé a entrar y probá de nuevo.'; return; }
+    if (gift && !gift.id) { document.querySelector('#save-message').textContent = 'Este regalo no tiene un identificador válido. Cerrá el formulario y volvé a abrirlo desde la tarjeta.'; return; }
     const data = { person: state.filter, title: String(fd.get('title')).trim(), product_url: String(fd.get('product_url') || '').trim() || null,
       image_url: String(fd.get('image_url') || '').trim() || null, price: fd.get('price') ? Number(fd.get('price')) : null,
       category: String(fd.get('category')), priority: fd.get('priority') ? Number(fd.get('priority')) : null,
       notes: String(fd.get('notes') || '').trim() || null, occasion: state.occasion, updated_by: state.user.id };
     const msg = document.querySelector('#save-message');
     msg.textContent = 'Guardando…';
+    const saveButton = e.currentTarget.querySelector('button[type="submit"]');
+    saveButton.disabled = true;
     const result = gift ? await supabase.from('gifts').update(data).eq('id', gift.id).select().single()
                         : await supabase.from('gifts').insert(data).select().single();
+    saveButton.disabled = false;
     if (result.error) { msg.textContent = `No se pudo guardar: ${result.error.message}`; return; }
-    await loadGifts();
     document.querySelector('#gift-form-wrap').innerHTML = '';
+    await loadGifts();
     render();
   });
 }
@@ -162,15 +166,31 @@ async function fetchProduct() {
     const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudieron obtener los datos de esa tienda.');
-    if (data.title && !form.elements.title.value) form.elements.title.value = data.title;
-    if (data.image) form.elements.image_url.value = data.image;
-    if (data.price && !form.elements.price.value) form.elements.price.value = data.price;
-    msg.textContent = data.image ? 'Listo: encontramos información del producto. Revisala antes de guardar.' : 'No encontramos una foto automática. Podés pegar la URL de una imagen manualmente.';
+    // Al volver a buscar, priorizamos los datos actuales publicados por la tienda.
+    if (data.title) form.elements.title.value = data.title;
+    if (data.image) { form.elements.image_url.value = data.image; updatePhotoPreview(); }
+    if (data.price !== null && data.price !== undefined && Number.isFinite(Number(data.price))) form.elements.price.value = String(Math.round(Number(data.price)));
+    const found = [data.title, data.image, data.price !== null && data.price !== undefined].filter(Boolean).length;
+    msg.textContent = found ? `Encontramos datos de la tienda${data.price !== null && data.price !== undefined ? ', incluido el precio' : ''}. Revisalos antes de guardar.` : 'La tienda no publicó datos que podamos leer. Podés completar el nombre, el precio y la foto a mano.';
   } catch (e) {
     msg.textContent = `${e.message} Algunas tiendas bloquean la lectura automática; podés completar la tarjeta manualmente.`;
   }
 }
+
+function updatePhotoPreview() {
+  const form = document.querySelector('#gift-form');
+  if (!form) return;
+  const url = String(form.elements.image_url.value || '').trim();
+  const preview = document.querySelector('#photo-preview');
+  const img = document.querySelector('#photo-preview-img');
+  if (!preview || !img) return;
+  if (!url) { preview.hidden = true; img.removeAttribute('src'); return; }
+  preview.hidden = false;
+  img.src = url;
+  img.onerror = () => { preview.hidden = true; };
+}
 async function deleteGift(id) {
+  if (!id || id === 'undefined') { alert('No encontramos el identificador de este regalo. Actualizá la página y probá de nuevo.'); return; }
   if (!confirm('¿Querés borrar este regalo?')) return;
   const { error } = await supabase.from('gifts').delete().eq('id', id);
   if (error) alert(`No se pudo borrar: ${error.message}`);
@@ -187,6 +207,8 @@ async function loadGifts() {
   state.loading = false;
   if (error) { app.innerHTML = `<main class="auth-wrap"><section class="auth-card"><h1>No pudimos cargar la lista</h1><p>${escapeHtml(error.message)}</p></section></main>`; return; }
   state.gifts = data || [];
+  // No reconstruir la pantalla mientras alguien está completando un regalo: evita perder lo escrito.
+  if (document.querySelector('#gift-form')) return;
   render();
 }
 let giftsChannel = null;
