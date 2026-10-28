@@ -1,7 +1,11 @@
 :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#352b26;background:#faf7f3;font-synthesis:none;text-rendering:optimizeLegibility}*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.65;cursor:wait}.setup-wrap,.auth-wrap{min-height:100vh;display:grid;place-items:center;padding:22px;background:#faf7f3}.setup-card,.auth-card{width:min(100%,460px);background:#fffdfa;border:1px solid #eee5de;border-radius:22px;padding:clamp(24px,5vw,38px);box-shadow:0 12px 38px #5b40300b}.eyebrow{font-size:10px;letter-spacing:.13em;font-weight:750;color:#927b6e;margin:0 0 9px}.setup-card h1,.auth-card h1,.topbar h1{font-family:Georgia,serif;font-weight:500;letter-spacing:-.04em;line-height:1.08}.setup-card h1,.auth-card h1{font-size:clamp(32px,7vw,43px);margin:0 0 20px}.setup-card p,.auth-card p{line-height:1.6;color:#786b63}.notice{background:#f6f0eb;padding:15px;border-radius:12px;line-height:1.6;margin:20px 0}.preview-pills{display:flex;flex-wrap:wrap;gap:8px}.preview-pills span{background:#f1e8e1;padding:8px 11px;border-radius:999px;font-size:12px}.auth-card form,.gift-form{display:grid;gap:15px}.auth-card label,.gift-form label{display:grid;gap:7px;font-size:12px;font-weight:650;color:#65564e}.auth-card input,.gift-form input,.gift-form select,.gift-form textarea{width:100%;padding:12px 13px;border:1px solid #e5dbd3;border-radius:11px;background:#fffefa;color:#352b26;outline:none}.auth-card input:focus,.gift-form input:focus,.gift-form select:focus,.gift-form textarea:focus{border-color:#b99886;box-shadow:0 0 0 3px #b9988617}.primary,.secondary,.logout,.text-button,.subtle-button,.link-button,.tab{border:0;border-radius:999px;padding:11px 15px;font-weight:650;font-size:12px}.primary{background:#4c3930;color:white}.primary:hover{background:#392a23}.secondary{background:#f2e9e2;color:#59463b}.text-button{background:transparent;color:#725744;text-decoration:underline;padding-left:0}.small,.message{font-size:12px;color:#8b7b70}.shell{width:min(100% - 40px,1240px);margin:auto;padding:32px 0 48px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:30px}.topbar h1{font-size:clamp(30px,5vw,45px);margin:0}.logout{background:#f0e8e2;color:#65554b}.tabs{display:flex;gap:8px;overflow-x:auto;padding:0 0 22px;border-bottom:1px solid #eee4dd}.tab{background:transparent;color:#77685f;white-space:nowrap}.tab.active{background:#ead2c9;color:#352b26}.section-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:24px 0 20px}.section-heading h2{font-family:Georgia,serif;font-size:29px;font-weight:500;margin:0}.category{margin:24px 0}.category-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.category-title h3{font-family:Georgia,serif;font-size:21px;font-weight:500;margin:0}.category-title span{font-size:11px;color:#9a887d}.gift-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.gift-card{overflow:hidden;border:1px solid #eee4dd;border-radius:15px;background:#fffdfa;min-width:0;transition:box-shadow .15s,border-color .15s}.gift-card:hover{border-color:#e3d2c6;box-shadow:0 7px 22px #5b40300b}.gift-image{height:190px;background:#f4eee8;display:grid;place-items:center;overflow:hidden}.gift-image img{width:100%;height:100%;object-fit:contain;background:#fff}.image-placeholder{font-size:11px;color:#9b8b80}.gift-body{padding:14px}.priority{display:inline-flex;background:#f2e6dd;color:#765b49;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:750}.gift-body h3{font-family:Georgia,serif;font-size:19px;font-weight:500;margin:10px 0 6px;overflow-wrap:anywhere}.price{font-size:15px;font-weight:750;margin:0 0 8px}.notes{font-size:12px;color:#827267;line-height:1.5}.card-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:14px}.link-button{display:inline-block;background:#f1e8e1;color:#4d3b31;text-decoration:none}.subtle-button{padding:8px 10px;background:#f7f2ed;color:#6b5b50}.subtle-button.delete{color:#9a4c43}.empty{border:1px dashed #e1d3c8;border-radius:15px;text-align:center;padding:40px 20px;color:#8a786b}.empty h3{font-family:Georgia,serif;font-size:23px;font-weight:500;color:#4b3e35;margin:8px}.empty p,.empty-inline{font-size:13px}.empty-icon{font-size:26px}.empty-inline{padding:8px 0;color:#a39489}.gift-form{background:#fffdfa;border:1px solid #eadfd7;border-radius:17px;padding:clamp(16px,3vw,24px);margin:0 0 24px;box-shadow:0 10px 28px #5b40300a}.form-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}.form-top h3{font-family:Georgia,serif;font-size:24px;font-weight:500;margin:0}.close-form{border:0;background:#f5eee8;border-radius:50%;width:34px;height:34px;font-size:22px;color:#65554b}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.gift-form .message{margin:0}.gift-form .small{margin:0}.photo-preview{display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #eee4dd;border-radius:12px;background:#fcfaf7}.photo-preview img{width:76px;height:76px;object-fit:contain;background:#f5eee8;border-radius:8px}.photo-preview span{font-size:12px;color:#86766c}footer{text-align:center;color:#a29389;font-size:11px;padding:32px 0 0}@media(max-width:760px){.shell{width:min(100% - 24px,1240px);padding-top:22px}.topbar{align-items:flex-start}.topbar h1{max-width:290px}.gift-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.gift-image{height:155px}.gift-body{padding:11px}.gift-body h3{font-size:17px}.card-actions{gap:5px}.subtle-button{font-size:10px;padding:8px}.form-grid{grid-template-columns:1fr}.section-heading{align-items:center}.section-heading h2{font-size:25px}.add-button{white-space:nowrap}}@media(max-width:390px){.gift-grid{grid-template-columns:1fr}.gift-image{height:210px}.topbar h1{font-size:29px}.section-heading{align-items:flex-start;flex-direction:column}.add-button{width:100%}}
-/* Centrar las imágenes de las tarjetas de regalos */
+/* Imágenes de productos centradas */
 
 .gift-image {
+
+  height: 190px;
+
+  background: #fff;
 
   display: flex;
 
@@ -10,10 +14,6 @@
   justify-content: center;
 
   overflow: hidden;
-
-  width: 100%;
-
-  position: relative;
 
 }
 
@@ -27,17 +27,29 @@
 
   object-fit: contain;
 
-  object-position: center center;
+  object-position: center;
 
-  margin: auto;
+  margin: 0 auto;
 
 }
 
-.gift-image.no-image {
+@media (max-width: 760px) {
 
-  align-items: center;
+  .gift-image {
 
-  justify-content: center;
+    height: 155px;
+
+  }
+
+}
+
+@media (max-width: 390px) {
+
+  .gift-image {
+
+    height: 210px;
+
+  }
 
 }
  
