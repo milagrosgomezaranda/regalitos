@@ -1,0 +1,29 @@
+
+> live
+> node live-check.mjs
+
+
+[Bolso Irimo] {
+  itemId: 'MLA1598228317',
+  catalogId: 'MLA24365049',
+  itemIds: [ 'MLA1598228317' ],
+  catalogIds: [ 'MLA24365049' ]
+}
+FAIL: No se pudieron obtener title, price e image de forma confiable.
+ - direct:fetch failed
+ - direct:fetch failed
+ - cors-proxy:fetch failed
+ - cors-proxy:fetch failed
+ - cors-read:fetch failed
+ - cors-read:fetch failed
+
+[Adidas Terrex] {
+  itemId: 'MLA2675701986',
+  catalogId: 'MLAU3674909961',
+  itemIds: [ 'MLA2675701986' ],
+  catalogIds: [ 'MLAU3674909961', 'MLAU3683124066', 'MLA56797757' ]
+}
+FAIL: No se pudieron obtener title, price e image de forma confiable.
+ - direct:fetch failed
+ - cors-proxy:fetch failed
+ - cors-read:fetch failed
