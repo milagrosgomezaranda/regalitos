@@ -1,0 +1,29 @@
+Regalitos - validacion alternativa Playwright
+Fecha: 2026-10-29
+
+VALIDADO EN ESTE ENTORNO
+- Sintaxis mercadolibre-playwright.mjs: OK
+- Sintaxis api/product-playwright.js: OK
+- Sintaxis src/main.js: OK
+- Sintaxis api/product.js: OK
+- Tests totales: 16/16 PASS
+- Los tests verifican:
+  * IDs de publicacion/catalogo en URLs compartidas.
+  * Rechazo de logo como imagen.
+  * Rechazo de verification/challenge.
+  * Prioridad del precio actual dentro de #price second-line.
+  * Titulo h1.ui-pdp-title.
+  * Imagen principal de galeria mlstatic.
+  * Fallback al importador anterior.
+
+PLAYWRIGHT SERVERLESS
+- playwright-core fijado en 1.63.0.
+- @sparticuz/chromium fijado en 153.0.0.
+- Playwright 1.63 usa Chromium 153.0.8010.12, por lo que se fija la misma familia mayor que el Chromium serverless.
+- Node fijado en 22.x.
+- Funcion api/product-playwright.js con maxDuration 60s.
+
+LIMITACION DEL ENTORNO DE CHATGPT
+- npm install/build no pudo ejecutarse porque la salida npm del contenedor expiro sin descargar dependencias.
+- La prueba previa con un Chromium real en este entorno arranco el navegador pero page.goto fue bloqueado antes de salir a Internet con net::ERR_BLOCKED_BY_ADMINISTRATOR.
+- Por eso la comprobacion live final debe hacerse en el deployment de Vercel.

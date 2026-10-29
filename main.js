@@ -663,11 +663,21 @@ async function fetchProduct() {
   msg.textContent = 'Buscando los datos del producto…';
 
   try {
-    const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`);
-    const data = await response.json().catch(() => ({}));
+    let response = await fetch(`/api/product-playwright?url=${encodeURIComponent(url)}`);
+    let data = await response.json().catch(() => ({}));
+    let method = data.method || 'playwright-dom';
 
     if (!response.ok) {
-      throw new Error(data.error || 'No se pudieron obtener los datos de la tienda.');
+      const playwrightError = data.error || 'Playwright no pudo leer la ficha.';
+
+      response = await fetch(`/api/product?url=${encodeURIComponent(url)}`);
+      data = await response.json().catch(() => ({}));
+      method = data.method || 'html-fallback';
+
+      if (!response.ok) {
+        const fallbackError = data.error || 'El importador alternativo tampoco pudo leer la ficha.';
+        throw new Error(`${playwrightError} ${fallbackError}`);
+      }
     }
 
     const product = data.product || data.item || data;
@@ -695,7 +705,7 @@ async function fetchProduct() {
     ].filter(Boolean).length;
 
     msg.textContent = found === 3
-      ? 'Encontramos el nombre, el precio y la foto. Revisalos antes de guardar.'
+      ? `Encontramos el nombre, el precio y la foto${method === 'playwright-dom' ? ' desde la ficha real' : ''}. Revisalos antes de guardar.`
       : found > 0
         ? `Encontramos ${found} dato${found === 1 ? '' : 's'} útil${found === 1 ? '' : 'es'}. Completá lo que falte antes de guardar.`
         : 'No pudimos leer los datos de esa tienda. Podés elegir la foto desde tu celular y completar el nombre y el precio manualmente.';
