@@ -1,451 +1,255 @@
 
-const ALLOWED_PROTOCOLS = new Set(["https:"]);
+const clean = (v) =>
+  typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
 
-function clean(value) {
-  return String(value ?? "")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .trim();
-}
+const first = (...values) =>
+  values.find((v) => v !== null && v !== undefined && v !== "");
 
-function safeImage(value, baseUrl) {
-  if (!value || typeof value !== "string") return "";
-  try {
-    const u = new URL(value, baseUrl);
-    return u.protocol === "https:" ? u.href : "";
-  } catch {
-    return "";
+function getMeta(html, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
+
+  for (const tag of tags) {
+    const name = tag.match(/\b(?:property|name|itemprop)=["']([^"']+)["']/i)?.[1];
+    if (name?.toLowerCase() !== key.toLowerCase()) continue;
+
+    const content = tag.match(/\bcontent=["']([^"']*)["']/i)?.[1];
+    if (content) return clean(content.replace(/&amp;/g, "&").replace(/&quot;/g, '"'));
   }
+
+  return null;
 }
 
 function parsePrice(value) {
-  if (value == null || value === "") return null;
-  if (typeof value === "number") {
-    return Number.isFinite(value) && value > 0 ? value : null;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
   }
 
-  const s = String(value).replace(/[^\d.,-]/g, "");
-  if (!s) return null;
+  if (typeof value === "string") {
+    const normalized = value.replace(/[^\d.,]/g, "").trim();
+    if (!normalized) return null;
 
-  let n = s;
-  if (s.includes(",") && s.includes(".")) {
-    n = s.lastIndexOf(",") > s.lastIndexOf(".")
-      ? s.replace(/\./g, "").replace(",", ".")
-      : s.replace(/,/g, "");
-  } else if (s.includes(",")) {
-    n = s.replace(",", ".");
-  } else if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
-    n = s.replace(/\./g, "");
-  }
-
-  const result = Number(n);
-  return Number.isFinite(result) && result > 0 ? result : null;
-}
-
-function getMeta(html, keys) {
-  const tags = html.match(/<meta\b[^>]*>/gi) || [];
-
-  for (const key of keys) {
-    for (const tag of tags) {
-      const name = tag.match(
-        /\b(?:property|name|itemprop)=["']([^"']+)["']/i
-      )?.[1];
-      const content = tag.match(/\bcontent=["']([^"']*)["']/i)?.[1];
-
-      if (name?.toLowerCase() === key.toLowerCase() && content) {
-        return clean(content);
-      }
-    }
-  }
-  return "";
-}
-
-function getMercadoLibreIds(url) {
-  const items = [];
-  const catalogs = [];
-
-  const addItem = value => {
-    if (/^MLA\d+$/i.test(value || "")) {
-      const id = value.toUpperCase();
-      if (!items.includes(id)) items.push(id);
-    }
-  };
-
-  const addCatalog = value => {
-    if (/^MLA\d+$/i.test(value || "")) {
-      const id = value.toUpperCase();
-      if (!catalogs.includes(id)) catalogs.push(id);
-    }
-  };
-
-  const filters = url.searchParams.get("pdp_filters") || "";
-  const match = filters.match(/item_id\s*:\s*(MLA\d+)/i);
-  if (match) addItem(match[1]);
-
-  addItem(url.searchParams.get("item_id"));
-  addItem(url.searchParams.get("wid"));
-
-  const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
-  addItem(fragment.get("wid"));
-  addItem(fragment.get("item_id"));
-
-  const catalogMatch = url.pathname.match(/\/p\/(MLA\d+)/i);
-  if (catalogMatch) addCatalog(catalogMatch[1]);
-
-  const directMatch = url.pathname.match(/\/(MLA-?\d+)(?:-|\/|$)/i);
-  if (directMatch) addItem(directMatch[1].replace("-", ""));
-
-  return { items, catalogs };
-}
-
-function isMercadoLibreHost(host) {
-  return /(^|\.)mercadolibre\.[a-z.]+$/i.test(host);
-}
-
-/*
- * Busca el precio dentro de la sección "Mejor precio".
- * No utiliza el primer precio global de la página, porque puede ser
- * el precio en cuotas o el de una tienda distinta.
- *
- * Si no puede identificar un precio en esa sección, devuelve null
- * y permite que continúe la extracción habitual.
- */
-function getBestPriceFromSection(html) {
-  const decoded = clean(
-    html
-      .replace(/\\u0024/gi, "$")
-      .replace(/\\u003c/gi, "<")
-      .replace(/\\u003e/gi, ">")
-      .replace(/\\n/g, " ")
-      .replace(/\\t/g, " ")
-  );
-
-  const text = decoded
-    .replace(/<sup[^>]*>(\d{2})<\/sup>/gi, ",$1")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ");
-
-  const marker = /mejor\s+precio/i;
-  let searchFrom = 0;
-
-  while (searchFrom < text.length) {
-    const match = marker.exec(text.slice(searchFrom));
-    if (!match) break;
-
-    const start = searchFrom + match.index + match[0].length;
-    const section = text.slice(start, start + 900);
-
-    // La sección puede incluir el precio anterior tachado y el vigente.
-    const prices = [
-      ...section.matchAll(
-        /\$\s*((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2})?)/g
-      )
-    ]
-      .map(m => parsePrice(m[1]))
-      .filter(n => n !== null);
-
-    if (prices.length) {
-      // El precio vigente suele ser menor que el precio tachado.
-      // Solo lo usamos si hay una diferencia entre precios visibles.
-      const unique = [...new Set(prices)];
-      if (unique.length > 1) return Math.min(...unique);
-      return unique[0];
+    // Formatos argentinos: 62.066,35 o 62066,35
+    if (normalized.includes(",")) {
+      const n = Number(normalized.replace(/\./g, "").replace(",", "."));
+      return Number.isFinite(n) && n > 0 ? n : null;
     }
 
-    searchFrom = start;
+    // Evita interpretar separadores de miles como decimales.
+    const n = Number(normalized.replace(/,/g, ""));
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   return null;
 }
 
-function extractEmbeddedData(html, baseUrl) {
+function getIds(url) {
+  const ids = {
+    item: null,
+    product: null,
+  };
+
+  try {
+    const u = new URL(url);
+    ids.item =
+      u.searchParams.get("wid") ||
+      u.searchParams.get("item_id") ||
+      u.searchParams.get("pdp_filters")?.match(/item_id:(MLA\d+)/)?.[1] ||
+      u.hash.match(/wid=(MLA\d+)/)?.[1] ||
+      u.pathname.match(/MLA\d{6,}/)?.[0] ||
+      null;
+
+    ids.product = u.pathname.match(/\/p\/(MLA\d+)/)?.[1] || null;
+  } catch {}
+
+  return ids;
+}
+
+function walk(value, callback, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 18) return;
+
+  callback(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, callback, depth + 1);
+  } else {
+    for (const item of Object.values(value)) {
+      walk(item, callback, depth + 1);
+    }
+  }
+}
+
+function extractJson(html) {
+  const results = [];
   const scripts = html.match(
-    /<script\b[^>]*>[\s\S]*?<\/script>/gi
+    /<script\b[^>]*type=["']application\/(?:ld\+json|json)["'][^>]*>[\s\S]*?<\/script>/gi
   ) || [];
 
-  const best = { title: "", image: "", price: null };
+  for (const script of scripts) {
+    const body = script.replace(/^<script\b[^>]*>/i, "").replace(/<\/script>$/i, "");
+    try {
+      results.push(JSON.parse(body));
+    } catch {}
+  }
 
-  function inspect(value, depth = 0) {
-    if (!value || depth > 12) return;
+  // Mercado Libre también puede incluir estado de la aplicación
+  // en scripts sin type="application/json".
+  const statePatterns = [
+    /window\.__PRELOADED_STATE__\s*=\s*({[\s\S]*?});\s*(?:<\/script>|$)/,
+    /window\.MELI\s*=\s*({[\s\S]*?});\s*(?:<\/script>|$)/,
+  ];
 
-    if (Array.isArray(value)) {
-      for (const item of value) inspect(item, depth + 1);
-      return;
+  for (const pattern of statePatterns) {
+    const match = html.match(pattern);
+    if (match) {
+      try {
+        results.push(JSON.parse(match[1]));
+      } catch {}
     }
+  }
 
-    if (typeof value !== "object") return;
+  return results;
+}
 
-    const title = clean(
-      value.title || value.name || value.productTitle || ""
-    );
+function extract(html, url) {
+  const ids = getIds(url);
+  const roots = extractJson(html);
 
-    const picture =
-      value.secure_thumbnail ||
-      value.thumbnail ||
-      value.picture ||
-      value.image ||
-      value.secure_url ||
-      value.url;
+  let winnerPrice = null;
+  let matchingItemPrice = null;
+  let jsonTitle = null;
+  let jsonImage = null;
 
-    const image = typeof picture === "string"
-      ? safeImage(picture, baseUrl)
-      : safeImage(picture?.url || picture?.secure_url, baseUrl);
+  for (const root of roots) {
+    walk(root, (obj) => {
+      const winner = obj.buy_box_winner;
 
-    const price = parsePrice(
-      value.price ??
-      value.amount ??
-      value.sale_price ??
-      value.current_price
-    );
+      if (winner && typeof winner === "object") {
+        const winnerId = winner.item_id || winner.id;
+        const price = parsePrice(winner.price);
 
-    if (title.length > best.title.length) best.title = title;
-    if (!best.image && image) best.image = image;
-    if (best.price === null && price !== null) best.price = price;
-
-    for (const [key, child] of Object.entries(value)) {
-      if (child && typeof child === "object") {
-        inspect(child, depth + 1);
-      } else if (
-        typeof child === "string" &&
-        child.length > 20 &&
-        /state|product|data/i.test(key)
-      ) {
-        try {
-          inspect(JSON.parse(child), depth + 1);
-        } catch {
-          // El valor no era JSON.
+        if (
+          price &&
+          (!ids.item || !winnerId || winnerId === ids.item)
+        ) {
+          winnerPrice = price;
         }
       }
-    }
-  }
 
-  for (const script of scripts) {
-    const raw = script
-      .replace(/^<script\b[^>]*>/i, "")
-      .replace(/<\/script>$/i, "")
-      .trim();
-
-    if (!raw || raw.length > 5000000) continue;
-
-    try {
-      inspect(JSON.parse(raw));
-    } catch {
-      // Algunos scripts contienen JavaScript.
-    }
-  }
-
-  return best;
-}
-
-async function fetchJson(url) {
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(6000)
-  });
-
-  if (!response.ok) return null;
-  return response.json();
-}
-
-async function getApiProduct(url) {
-  const { items, catalogs } = getMercadoLibreIds(url);
-
-  for (const id of items) {
-    try {
-      const item = await fetchJson(
-        `https://api.mercadolibre.com/items/${id}`
-      );
-      if (!item) continue;
-
-      const result = {
-        title: clean(item.title),
-        image: safeImage(
-          item.secure_thumbnail ||
-          item.thumbnail ||
-          item.pictures?.[0]?.secure_url ||
-          item.pictures?.[0]?.url,
-          url.href
-        ),
-        price: parsePrice(item.price)
-      };
-
-      if (result.title || result.image || result.price !== null) {
-        return result;
+      if (ids.item && obj.id === ids.item) {
+        matchingItemPrice = first(
+          parsePrice(obj.price),
+          parsePrice(obj.amount)
+        );
       }
-    } catch {
-      // Continuar con la página pública.
-    }
+
+      if (!jsonTitle) {
+        const type = obj["@type"];
+        if (
+          type === "Product" ||
+          (Array.isArray(type) && type.includes("Product"))
+        ) {
+          jsonTitle = clean(obj.name);
+          const image = obj.image;
+          jsonImage = Array.isArray(image) ? image[0] : image;
+          jsonImage = typeof jsonImage === "object"
+            ? jsonImage?.url
+            : jsonImage;
+        }
+      }
+    });
   }
 
-  for (const id of catalogs) {
-    try {
-      const product = await fetchJson(
-        `https://api.mercadolibre.com/products/${id}`
-      );
-      if (!product) continue;
+  const title = first(
+    jsonTitle,
+    getMeta(html, "og:title"),
+    getMeta(html, "twitter:title")
+  );
 
-      const result = {
-        title: clean(product.name || product.title),
-        image: safeImage(
-          product.pictures?.[0]?.url ||
-          product.main_picture?.url,
-          url.href
-        ),
-        price: null
-      };
+  const image = first(
+    jsonImage,
+    getMeta(html, "og:image"),
+    getMeta(html, "twitter:image")
+  );
 
-      if (result.title || result.image) return result;
-    } catch {
-      // Continuar con la página pública.
-    }
-  }
+  // No usar cuotas ni recorrer números arbitrarios del HTML.
+  const price = first(
+    winnerPrice,
+    matchingItemPrice,
+    parsePrice(getMeta(html, "product:price:amount")),
+    parsePrice(getMeta(html, "og:price:amount"))
+  );
 
-  return null;
-}
-
-function validateUrl(url) {
-  if (!ALLOWED_PROTOCOLS.has(url.protocol)) return false;
-
-  const host = url.hostname.toLowerCase();
-
-  if (
-    !host ||
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local") ||
-    host.endsWith(".internal") ||
-    host === "127.0.0.1" ||
-    host === "0.0.0.0" ||
-    host.startsWith("10.") ||
-    host.startsWith("192.168.") ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
-  ) return false;
-
-  return true;
+  return {
+    title: title || null,
+    image: image || null,
+    price: price ?? null,
+  };
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET");
-  res.setHeader("Cache-Control", "s-maxage=60");
+  res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "GET") {
-    return res.status(405).json({ error: "Método no permitido." });
+    return res.status(405).json({ error: "Método no permitido" });
   }
 
-  const rawUrl = Array.isArray(req.query?.url)
-    ? req.query.url[0]
-    : req.query?.url;
+  const url = req.query?.url;
 
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return res.status(400).json({ error: "Falta el enlace del producto." });
+  if (!url || typeof url !== "string") {
+    return res.status(400).json({ error: "Falta la URL del producto" });
   }
 
-  let url;
+  let parsed;
   try {
-    url = new URL(rawUrl);
+    parsed = new URL(url);
   } catch {
-    return res.status(400).json({ error: "El enlace no parece válido." });
+    return res.status(400).json({ error: "URL inválida" });
   }
 
-  if (!validateUrl(url)) {
-    return res.status(400).json({ error: "El enlace no es válido." });
+  if (
+    parsed.protocol !== "https:" ||
+    !["mercadolibre.com.ar", "www.mercadolibre.com.ar"].includes(parsed.hostname)
+  ) {
+    return res.status(400).json({ error: "Solo se admiten enlaces de Mercado Libre Argentina" });
   }
 
   try {
-    if (isMercadoLibreHost(url.hostname)) {
-      const apiProduct = await getApiProduct(url).catch(() => null);
-
-      // Mantener el método actual cuando la API entrega los tres datos.
-      if (
-        apiProduct?.title &&
-        apiProduct?.image &&
-        apiProduct.price !== null
-      ) {
-        return res.status(200).json(apiProduct);
-      }
-    }
-
-    const response = await fetch(url.href, {
+    const response = await fetch(parsed.href, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        Accept: "text/html,application/xhtml+xml,application/json",
-        "Accept-Language": "es-AR,es;q=0.9,en;q=0.8"
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "es-AR,es;q=0.9",
+        Accept: "text/html,application/xhtml+xml",
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
-      return res.status(422).json({
-        error: "Mercado Libre no permitió leer la página desde el servidor."
+      return res.status(200).json({
+        title: null,
+        image: null,
+        price: null,
+        warning: `Mercado Libre respondió HTTP ${response.status}.`,
       });
     }
 
-    const finalUrl = new URL(response.url || url.href);
-    if (!validateUrl(finalUrl)) {
-      return res.status(422).json({
-        error: "La página redirigió a una dirección no permitida."
-      });
-    }
+    const html = await response.text();
+    const product = extract(html, parsed.href);
 
-    const html = (await response.text()).slice(0, 5000000);
-    const embedded = extractEmbeddedData(html, finalUrl.href);
-
-    const metaTitle = getMeta(html, ["og:title", "twitter:title"]);
-    const pageTitle = clean(
-      html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-        ?.replace(/<[^>]+>/g, "") || ""
-    );
-
-    let title = metaTitle || embedded.title || pageTitle;
-
-    // No aceptar el nombre genérico de la tienda como producto.
-    if (/^mercado libre(?:\s*[-|].*)?$/i.test(title)) title = "";
-
-    const image = safeImage(
-      getMeta(html, [
-        "og:image",
-        "og:image:url",
-        "twitter:image",
-        "twitter:image:src"
-      ]) || embedded.image,
-      finalUrl.href
-    );
-
-    // Prioridad: precio visible en "Mejor precio", después metadatos,
-    // y finalmente el precio estructurado que ya se utilizaba.
-    const selectedPrice = getBestPriceFromSection(html);
-
-    const metaPrice = parsePrice(
-      getMeta(html, [
-        "product:price:amount",
-        "og:price:amount",
-        "product:price"
-      ])
-    );
-
-    const price =
-      selectedPrice ??
-      metaPrice ??
-      embedded.price;
-
-    if (!title && !image && price === null) {
-      return res.status(422).json({
-        error:
-          "Mercado Libre no entregó datos legibles al servidor. No se pudo completar la importación."
-      });
-    }
-
-    return res.status(200).json({ title, image, price });
+    return res.status(200).json({
+      ...product,
+      warning:
+        !product.title || !product.image || product.price == null
+          ? "Mercado Libre no expuso todos los datos. Completá los campos faltantes manualmente."
+          : null,
+    });
   } catch {
-    return res.status(422).json({
-      error: "No pudimos leer los datos automáticamente. Probá de nuevo."
+    return res.status(200).json({
+      title: null,
+      image: null,
+      price: null,
+      warning: "No se pudo leer el producto. Completá los campos manualmente.",
     });
   }
 }
