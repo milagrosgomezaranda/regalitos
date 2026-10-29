@@ -673,10 +673,10 @@ async function fetchProduct() {
   }
 
   button.disabled = true;
-  msg.textContent = 'Buscando nombre, precio y foto…';
+  msg.textContent = 'Abriendo la ficha de Mercado Libre…';
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), 35000);
 
   try {
     const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`, {
@@ -710,7 +710,7 @@ async function fetchProduct() {
     msg.textContent = `Nombre, precio y foto cargados${timing}. Revisalos antes de guardar.`;
   } catch (error) {
     if (error?.name === 'AbortError') {
-      msg.textContent = 'La búsqueda tardó demasiado y fue cancelada. Podés completar los datos manualmente.';
+      msg.textContent = 'Browserless tardó demasiado y la búsqueda fue cancelada. Probá nuevamente.';
     } else {
       msg.textContent = error?.message || 'No se pudieron obtener los datos del producto.';
     }

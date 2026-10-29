@@ -2,7 +2,7 @@ import { importMercadoLibreProduct } from '../mercadolibre-importer.mjs';
 
 const cache = globalThis.__regalitosProductCache || new Map();
 globalThis.__regalitosProductCache = cache;
-const CACHE_MS = 5 * 60 * 1000;
+const CACHE_MS = 10 * 60 * 1000;
 
 function getCached(key) {
   const entry = cache.get(key);
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const product = await importMercadoLibreProduct(rawUrl.trim());
+    const product = await importMercadoLibreProduct(cacheKey, { timeoutMs: 30000 });
     const result = {
       title: product.title,
       price: product.price,
@@ -62,10 +62,10 @@ export default async function handler(req, res) {
       elapsedMs: Date.now() - startedAt,
     });
   } catch (error) {
-    return res.status(502).json({
+    const status = error?.code === 'BROWSERLESS_CONFIG' ? 500 : 502;
+    return res.status(status).json({
       ok: false,
       error: error?.message || 'No se pudo leer el producto.',
-      causes: Array.isArray(error?.causes) ? error.causes : [],
       elapsedMs: Date.now() - startedAt,
     });
   }

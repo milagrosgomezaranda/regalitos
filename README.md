@@ -1,47 +1,32 @@
 # Regalitos
 
-Versión consolidada del proyecto con importación liviana de productos de Mercado Libre.
+Versión del importador de Mercado Libre usando Browserless.
 
-## Importador de producto
+## Importador
 
-El frontend llama a un único endpoint:
+`/api/product` envía la URL a Browserless `/unblock`, con navegador real y proxy residencial de Argentina. Browserless devuelve el HTML renderizado y la aplicación extrae:
 
-`GET /api/product?url=<URL_MERCADOLIBRE>`
+- `h1.ui-pdp-title` para el título visible.
+- `.ui-pdp-price__second-line .andes-money-amount__fraction` + cents para el precio actual.
+- la primera `img.ui-pdp-image` de la galería para la foto real de `mlstatic.com`.
 
-El backend no levanta Chromium ni usa API keys. Prueba en paralelo:
+No se ejecuta Chromium dentro de Vercel y no se usan Jina Reader, cors.tools ni la API privada de Mercado Libre.
 
-1. Jina Reader con renderizado de navegador.
-2. `cors.tools/read?render=true`.
-3. HTML directo.
+## Variable obligatoria en Vercel
 
-Si los tres fallan, usa `cors.tools/proxy` como último fallback.
+`BROWSERLESS_TOKEN`
 
-Solo devuelve éxito cuando obtiene los tres datos requeridos:
-
-- `title`
-- `price`
-- `image`
-
-La imagen debe pertenecer a `mlstatic.com` y no puede ser un logo. Las páginas de verificación/CAPTCHA se rechazan.
+Guardarla en Settings > Environment Variables. No debe estar escrita en el repositorio.
 
 ## Vercel
 
-Mantener:
+- Framework: Vite
+- Output Directory: dist
 
-- Framework Preset: `Vite`
-- Output Directory: `dist`
-
-No requiere variables de entorno nuevas para el importador.
-
-Las variables existentes de Supabase se mantienen:
-
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
-
-## Comandos
+## Desarrollo
 
 ```bash
 npm install
-npm test
+npm run test
 npm run build
 ```

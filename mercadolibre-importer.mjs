@@ -196,7 +196,7 @@ export function isValidProductImage(value) {
 }
 
 export function looksBlocked(text, finalUrl = '') {
-  const sample = `${finalUrl}\n${String(text || '').slice(0, 50000)}`.toLowerCase();
+  const sample = `${finalUrl}\n${String(text || '').slice(0, 60000)}`.toLowerCase();
   return BLOCK_MARKERS.some((marker) => sample.includes(marker));
 }
 
@@ -219,8 +219,9 @@ function firstValidImageInHtml(fragment) {
     const srcset = String(attrs.srcset || '')
       .split(',')
       .map((entry) => entry.trim().split(/\s+/)[0])
-      .filter(Boolean);
-    const candidates = [attrs['data-zoom'], attrs['data-src'], attrs.src, ...srcset];
+      .filter(Boolean)
+      .reverse();
+    const candidates = [attrs['data-zoom'], ...srcset, attrs['data-src'], attrs.src];
     for (const candidate of candidates) {
       const normalized = normalizeImageCandidate(candidate);
       if (isValidProductImage(normalized)) return normalized;
@@ -247,7 +248,7 @@ function parseJsonLd(html) {
     try {
       values.push(JSON.parse(raw));
     } catch {
-      // malformed block: ignore it and continue with other sources
+      // Ignorar bloques JSON-LD inválidos.
     }
   }
   return values;
@@ -270,10 +271,8 @@ function extractJsonLdProduct(html) {
       const types = Array.isArray(node?.['@type']) ? node['@type'] : [node?.['@type']];
       if (!types.some((type) => String(type).toLowerCase() === 'product')) return;
       result.title ||= normalizeTitle(node.name || node.headline);
-
       const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
       result.price ||= normalizePrice(offers?.price ?? offers?.lowPrice ?? offers?.highPrice);
-
       const imageValue = Array.isArray(node.image) ? node.image[0] : node.image;
       const image = normalizeImageCandidate(imageValue?.url || imageValue?.contentUrl || imageValue);
       if (!result.image && isValidProductImage(image)) result.image = image;
@@ -284,7 +283,7 @@ function extractJsonLdProduct(html) {
 
 export function extractProductFromHtml(html, finalUrl = '') {
   if (!html || looksBlocked(html, finalUrl)) {
-    throw new Error('Mercado Libre devolvió una página de verificación o bloqueo.');
+    throw new Error('Browserless recibió una página de verificación o bloqueo de Mercado Libre.');
   }
 
   const meta = getMetaMap(html);
@@ -295,9 +294,8 @@ export function extractProductFromHtml(html, finalUrl = '') {
     || normalizeTitle(meta.get('og:title'))
     || normalizeTitle(meta.get('twitter:title'));
 
-  const priceSection = sliceFromClass(html, 'ui-pdp-price__second-line', 8000)
-    || sliceFromClass(html, 'ui-pdp-price__main-container', 10000)
-    || sliceFromClass(html, 'id="price"', 10000);
+  const priceSection = sliceFromClass(html, 'ui-pdp-price__second-line', 9000)
+    || sliceFromClass(html, 'ui-pdp-price__main-container', 11000);
   const fraction = firstClassText(priceSection, 'andes-money-amount__fraction');
   const cents = firstClassText(priceSection, 'andes-money-amount__cents');
   const visiblePrice = fraction
@@ -309,9 +307,9 @@ export function extractProductFromHtml(html, finalUrl = '') {
     || normalizePrice(meta.get('og:price:amount'))
     || normalizePrice(meta.get('price'));
 
-  const gallery = sliceFromClass(html, 'ui-pdp-gallery__figure', 16000);
+  const gallery = sliceFromClass(html, 'ui-pdp-gallery__figure', 20000);
   const image = firstValidImageInHtml(gallery)
-    || firstValidImageInHtml(sliceFromClass(html, 'ui-pdp-image', 12000))
+    || firstValidImageInHtml(sliceFromClass(html, 'ui-pdp-image', 16000))
     || [meta.get('og:image'), meta.get('twitter:image'), meta.get('image')]
       .map(normalizeImageCandidate)
       .find(isValidProductImage)
@@ -319,124 +317,100 @@ export function extractProductFromHtml(html, finalUrl = '') {
 
   if (!title || !price || !image) {
     const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean).join(', ');
-    throw new Error(`Respuesta HTML incompleta; faltan: ${missing}.`);
+    throw new Error(`Browserless abrió la ficha, pero faltan: ${missing}.`);
   }
 
   return { title, price, image };
 }
 
-export function extractProductFromMarkdown(markdown, finalUrl = '') {
-  if (!markdown || looksBlocked(markdown, finalUrl)) {
-    throw new Error('El lector devolvió una página de verificación o bloqueo.');
+function browserlessError(status, bodyText = '') {
+  if (status === 401 || status === 403) {
+    return new Error('Browserless rechazó BROWSERLESS_TOKEN. Revisá la variable de entorno en Vercel.');
   }
-
-  const source = String(markdown);
-  const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-
-  const titleLine = lines.find((line) => /^Title:\s*.+/i.test(line));
-  const heading = lines.find((line) => /^#{1,3}\s+/.test(line));
-  const title = normalizeTitle(titleLine?.replace(/^Title:\s*/i, ''))
-    || normalizeTitle(heading?.replace(/^#{1,3}\s+/, ''));
-
-  let price = null;
-  for (const line of lines) {
-    const lower = line.toLowerCase();
-    if (line.includes('~~')) continue;
-    if (/cuotas?|mercado cr[eé]dito|precio anterior|antes\s*\$|sin impuestos|off\b/.test(lower)) continue;
-
-    const match = line.match(/\$\s*([\d.]+(?:,\d{1,2})?)/);
-    const candidate = normalizePrice(match?.[1]);
-    if (candidate) {
-      price = candidate;
-      break;
-    }
+  if (status === 429) {
+    return new Error('Browserless no tiene unidades/concurrencia disponibles en este momento.');
   }
-
-  const imageCandidates = [
-    ...[...source.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((match) => match[1]),
-    ...[...source.matchAll(/https?:\/\/[^"'\s<>\])]+mlstatic\.com\/[^"'\s<>\])]+/gi)].map((match) => match[0]),
-  ];
-  const image = imageCandidates
-    .map(normalizeImageCandidate)
-    .find(isValidProductImage) || null;
-
-  if (!title || !price || !image) {
-    const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean).join(', ');
-    throw new Error(`Respuesta renderizada incompleta; faltan: ${missing}.`);
-  }
-
-  return { title, price, image };
+  const cleaned = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 180);
+  return new Error(`Browserless respondió HTTP ${status}${cleaned ? `: ${cleaned}` : ''}`);
 }
 
-async function fetchText(fetchImpl, url, { timeoutMs = 8000, headers = {} } = {}) {
+async function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/156 Safari/537.36',
-        'accept-language': 'es-AR,es;q=0.9,en;q=0.7',
-        ...headers,
-      },
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return { text, finalUrl: response.url || url };
+    return await fetchImpl(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Browserless tardó demasiado y se canceló la consulta.');
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function attemptJina(fetchImpl, target, timeoutMs) {
-  const readerUrl = `https://r.jina.ai/${target}`;
-  const result = await fetchText(fetchImpl, readerUrl, {
-    timeoutMs,
-    headers: {
-      accept: 'text/plain,*/*',
-      'x-engine': 'browser',
-      'x-respond-with': 'html',
-      'x-wait-for-selector': '.ui-pdp-title',
-      'x-respond-timing': 'visible-content',
-      'x-cache-tolerance': '0',
-    },
-  });
-  return { ...extractProductFromHtml(result.text, target), method: 'jina-reader' };
-}
-
-async function attemptCorsRead(fetchImpl, target, timeoutMs) {
-  const readUrl = `https://cors.tools/read?url=${encodeURIComponent(target)}&format=markdown&render=true`;
-  const result = await fetchText(fetchImpl, readUrl, {
-    timeoutMs,
-    headers: { accept: 'text/plain,*/*' },
-  });
-  return { ...extractProductFromMarkdown(result.text, target), method: 'cors-read' };
-}
-
-async function attemptDirect(fetchImpl, target, timeoutMs) {
-  const result = await fetchText(fetchImpl, target, {
-    timeoutMs,
-    headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
-  });
-  return { ...extractProductFromHtml(result.text, result.finalUrl), method: 'direct-html' };
-}
-
-async function attemptCorsProxy(fetchImpl, target, timeoutMs) {
-  const proxyUrl = `https://cors.tools/proxy?url=${encodeURIComponent(target)}`;
-  const result = await fetchText(fetchImpl, proxyUrl, {
-    timeoutMs,
-    headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
-  });
-  return { ...extractProductFromHtml(result.text, target), method: 'cors-proxy' };
-}
-
-function wrapAttempt(name, promise, errors) {
-  return promise.catch((error) => {
-    errors.push(`${name}: ${error?.message || String(error)}`);
+async function fetchViaBrowserless(fetchImpl, target, options = {}) {
+  const token = options.browserlessToken || process.env.BROWSERLESS_TOKEN;
+  if (!token) {
+    const error = new Error('Falta BROWSERLESS_TOKEN en las Environment Variables de Vercel.');
+    error.code = 'BROWSERLESS_CONFIG';
     throw error;
+  }
+
+  const baseUrl = String(options.browserlessBaseUrl || process.env.BROWSERLESS_BASE_URL || 'https://production-sfo.browserless.io').replace(/\/$/, '');
+  const timeoutMs = options.timeoutMs ?? 30000;
+  const params = new URLSearchParams({
+    token,
+    proxy: 'residential',
+    proxyCountry: 'ar',
+    proxyLocaleMatch: 'true',
+    timeout: String(Math.min(timeoutMs, 45000)),
   });
+
+  const response = await fetchWithTimeout(
+    fetchImpl,
+    `${baseUrl}/unblock?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+      body: JSON.stringify({
+        url: target,
+        content: true,
+        cookies: false,
+        screenshot: false,
+        browserWSEndpoint: false,
+        bestAttempt: true,
+        gotoOptions: {
+          waitUntil: 'domcontentloaded',
+          timeout: Math.min(timeoutMs - 4000, 22000),
+        },
+        waitForSelector: {
+          selector: 'h1.ui-pdp-title',
+          timeout: Math.min(timeoutMs - 6000, 14000),
+        },
+      }),
+    },
+    timeoutMs,
+  );
+
+  const raw = await response.text();
+  if (!response.ok) throw browserlessError(response.status, raw);
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error('Browserless devolvió una respuesta JSON inválida.');
+  }
+
+  if (!payload?.content || typeof payload.content !== 'string') {
+    throw new Error('Browserless no devolvió el HTML renderizado de la ficha.');
+  }
+
+  return payload.content;
 }
 
 export async function importMercadoLibreProduct(input, options = {}) {
@@ -445,33 +419,12 @@ export async function importMercadoLibreProduct(input, options = {}) {
 
   const ids = extractMercadoLibreIds(input);
   const normalized = normalizeMercadoLibreUrl(input);
-  const errors = [];
-  const primaryTimeoutMs = options.primaryTimeoutMs ?? 8500;
-  const fallbackTimeoutMs = options.fallbackTimeoutMs ?? 4500;
+  const html = await fetchViaBrowserless(fetchImpl, normalized, options);
+  const product = extractProductFromHtml(html, normalized);
 
-  // Los dos lectores renderizados se prueban al mismo tiempo. El primero que
-  // consiga title + price + image válidos gana, evitando esperas acumuladas.
-  try {
-    const result = await Promise.any([
-      wrapAttempt('jina-reader', attemptJina(fetchImpl, normalized, primaryTimeoutMs), errors),
-      wrapAttempt('cors-read', attemptCorsRead(fetchImpl, normalized, primaryTimeoutMs), errors),
-      wrapAttempt('direct-html', attemptDirect(fetchImpl, normalized, fallbackTimeoutMs), errors),
-    ]);
-    return { ...result, ids };
-  } catch {
-    // Sigue con un único fallback adicional.
-  }
-
-  try {
-    const result = await wrapAttempt(
-      'cors-proxy',
-      attemptCorsProxy(fetchImpl, normalized, fallbackTimeoutMs),
-      errors,
-    );
-    return { ...result, ids };
-  } catch {
-    const error = new Error('No se pudieron obtener título, precio e imagen de forma confiable.');
-    error.causes = errors;
-    throw error;
-  }
+  return {
+    ...product,
+    method: 'browserless-unblock-residential-ar',
+    ids,
+  };
 }
