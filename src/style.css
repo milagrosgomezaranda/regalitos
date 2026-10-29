@@ -52,4 +52,58 @@
   }
 
 }
+
+/* Formulario de regalo como ventana flotante */
+#gift-form-wrap:has(.gift-form) {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  background: rgba(38, 28, 23, 0.58);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+#gift-form-wrap .gift-form {
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100vh - 28px);
+  max-height: calc(100dvh - 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 20px;
+  background: #fffdfa;
+  border-radius: 18px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+}
+
+#gift-form-wrap .form-top {
+  position: sticky;
+  top: -20px;
+  z-index: 2;
+  padding: 8px 0 12px;
+  background: #fffdfa;
+}
+
+@media (max-width: 600px) {
+  #gift-form-wrap:has(.gift-form) {
+    padding: 10px;
+    place-items: center;
+  }
+
+  #gift-form-wrap .gift-form {
+    max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  #gift-form-wrap .form-top {
+    top: -16px;
+  }
+}
+
  
