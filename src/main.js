@@ -398,12 +398,15 @@ function showGiftForm(gift = null) {
 <h3>${isEditing ? 'Editar regalo' : 'Agregar regalo'}</h3>
 <button type="button" class="close-form" id="close-form" aria-label="Cerrar">×</button>
 </div>
+
 <label>
 Link del producto
 <input name="product_url" type="url" placeholder="https://..." value="${escapeHtml(gift?.product_url || '')}">
 </label>
+
 <button class="secondary" type="button" id="fetch-product">Completar con datos de la tienda</button>
 <p id="fetch-message" class="small" role="status"></p>
+
 <div class="form-grid">
 <label>
 Nombre
@@ -411,17 +414,26 @@ Nombre
 </label>
 <label>
 Precio en pesos
-<input name="price" type="number" min="0" step="1" placeholder="180000" value="${gift?.price ?? ''}">
+<input name="price" type="number" min="0" step="1" placeholder="Ej. 62066" value="${gift?.price ?? ''}">
 </label>
 </div>
+
 <label>
-URL de la foto
-<input name="image_url" type="url" placeholder="Se completa al buscar el link" value="${escapeHtml(gift?.image_url || '')}">
+Elegir foto desde el celular
+<input name="image_file" type="file" accept="image/*">
 </label>
+<p class="small">Podés elegir una captura o una foto del producto desde tu galería.</p>
+
+<label>
+URL de la foto (opcional)
+<input name="image_url" type="text" placeholder="Se completa al buscar el link o elegir una foto" value="${escapeHtml(gift?.image_url || '')}">
+</label>
+
 <div class="photo-preview" id="photo-preview" ${gift?.image_url ? '' : 'hidden'}>
 <img id="photo-preview-img" src="${escapeHtml(gift?.image_url || '')}" alt="Vista previa de la foto">
 <span>Vista previa de la foto</span>
 </div>
+
 ${!isChunguita ? `
 <div class="form-grid">
 <label>
@@ -444,15 +456,17 @@ Prioridad
 <input type="hidden" name="category" value="ninguna">
 <input type="hidden" name="priority" value="">
 `}
+
 <label>
 Nota (opcional)
 <textarea name="notes" rows="2" placeholder="Color, talle, modelo...">${escapeHtml(gift?.notes || '')}</textarea>
 </label>
+
 <button class="primary" type="submit">${isEditing ? 'Guardar cambios' : 'Guardar regalo'}</button>
 <p id="save-message" class="message" role="status"></p>
 </form>`;
 
-  // Ventana fija: editar funciona desde cualquier altura de la lista.
+  // Ventana fija para poder editar regalos desde cualquier altura de la lista.
   formWrap.style.position = 'fixed';
   formWrap.style.inset = '0';
   formWrap.style.zIndex = '9999';
@@ -490,8 +504,45 @@ Nota (opcional)
   document.querySelector('#fetch-product').addEventListener('click', fetchProduct);
 
   const photoInput = document.querySelector('#gift-form [name="image_url"]');
+  const imageFileInput = document.querySelector('#gift-form [name="image_file"]');
+
   photoInput.addEventListener('input', updatePhotoPreview);
   photoInput.addEventListener('change', updatePhotoPreview);
+
+  // Elegir una foto desde la galería, reducirla y convertirla a JPEG.
+  // Se limita la resolución para evitar guardar archivos enormes en Supabase.
+  imageFileInput.addEventListener('change', async () => {
+    const file = imageFileInput.files?.[0];
+    if (!file) return;
+
+    const msg = document.querySelector('#fetch-message');
+
+    if (!file.type.startsWith('image/')) {
+      msg.textContent = 'Elegí un archivo de imagen válido.';
+      imageFileInput.value = '';
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      msg.textContent = 'La foto pesa más de 10 MB. Elegí una más liviana.';
+      imageFileInput.value = '';
+      return;
+    }
+
+    msg.textContent = 'Preparando la foto…';
+
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const compressedImage = await compressImage(dataUrl);
+
+      photoInput.value = compressedImage;
+      updatePhotoPreview();
+
+      msg.textContent = 'Foto lista. Se guardará junto con el regalo.';
+    } catch {
+      msg.textContent = 'No pudimos preparar esa foto. Probá con otra imagen.';
+    }
+  });
 
   document.querySelector('#gift-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -509,12 +560,14 @@ Nota (opcional)
       return;
     }
 
+    const imageUrl = String(fd.get('image_url') || '').trim();
+
     const data = {
       person: state.filter,
       title: String(fd.get('title') || '').trim(),
       product_url: String(fd.get('product_url') || '').trim() || null,
-      image_url: String(fd.get('image_url') || '').trim() || null,
-      price: fd.get('price') ? Number(fd.get('price')) : null,
+      image_url: imageUrl || null,
+      price: fd.get('price') !== '' ? Number(fd.get('price')) : null,
       category: String(fd.get('category')),
       priority: fd.get('priority') ? Number(fd.get('priority')) : null,
       notes: String(fd.get('notes') || '').trim() || null,
@@ -547,6 +600,50 @@ Nota (opcional)
       if (saveButton.isConnected) saveButton.disabled = false;
     }
   });
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen.'));
+
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('No se pudo abrir la imagen.'));
+
+    img.src = src;
+  });
+}
+
+async function compressImage(dataUrl) {
+  const img = await loadImage(dataUrl);
+  const maxSize = 800;
+  const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.width * scale));
+  canvas.height = Math.max(1, Math.round(img.height * scale));
+
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    throw new Error('No se pudo preparar la imagen.');
+  }
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  return canvas.toDataURL('image/jpeg', 0.65);
 }
 
 async function fetchProduct() {
@@ -601,9 +698,9 @@ async function fetchProduct() {
       ? 'Encontramos el nombre, el precio y la foto. Revisalos antes de guardar.'
       : found > 0
         ? `Encontramos ${found} dato${found === 1 ? '' : 's'} útil${found === 1 ? '' : 'es'}. Completá lo que falte antes de guardar.`
-        : 'La tienda no publicó datos útiles que podamos leer. Podés completar el nombre, el precio y la foto a mano.';
+        : 'No pudimos leer los datos de esa tienda. Podés elegir la foto desde tu celular y completar el nombre y el precio manualmente.';
   } catch (error) {
-    msg.textContent = `${error.message || 'No se pudieron obtener los datos.'} Algunas tiendas bloquean la lectura automática; podés completar la tarjeta manualmente.`;
+    msg.textContent = `${error.message || 'No se pudieron obtener los datos.'} Podés elegir una foto desde tu celular y completar el resto manualmente.`;
   } finally {
     if (button.isConnected) button.disabled = false;
   }
@@ -627,8 +724,13 @@ function updatePhotoPreview() {
 
   preview.hidden = false;
   img.src = url;
+
   img.onerror = () => {
     preview.hidden = true;
+  };
+
+  img.onload = () => {
+    preview.hidden = false;
   };
 }
 
