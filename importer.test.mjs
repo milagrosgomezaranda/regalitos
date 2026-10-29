@@ -7,6 +7,7 @@ import {
   isValidProductImage,
   looksBlocked,
   importMercadoLibreProduct,
+  extractProductFromMarkdown,
 } from './mercadolibre-importer.mjs';
 
 const irimo = 'https://www.mercadolibre.com.ar/p/MLA24365049?matt_tool=89488245&pdp_filters=item_id:MLA1598228317&ua=5PF0k8YicT0vdd8UstmNrSMZpIf3q2zzhbnr9O9SvE9PmF8#origin=share&sid=share&wid=MLA1598228317&action=copy';
@@ -54,7 +55,36 @@ test('rechaza verification/challenge', () => {
 });
 
 
-test('prioriza la API publica del item sin OAuth y devuelve title, price e image', async () => {
+
+test('prioriza los datos visibles de la PDP: titulo, precio actual e imagen principal', () => {
+  const html = `<!doctype html><html><head>
+    <meta property="og:title" content="Titulo viejo de metadata | Mercado Libre">
+    <meta property="og:image" content="https://http2.mlstatic.com/D_NQ_NP_999-MLA999_012026-O.webp">
+    <script type="application/ld+json">{"@type":"Product","name":"Titulo JSON viejo","image":["https://http2.mlstatic.com/D_NQ_NP_999-MLA999_012026-O.webp"],"offers":{"@type":"Offer","price":"99999"}}</script>
+  </head><body>
+    <h1 class="ui-pdp-title">Producto visible real</h1>
+    <div class="ui-pdp-price__original-value"><span class="andes-money-amount--previous"><span class="andes-money-amount__fraction">250.000</span></span></div>
+    <div class="ui-pdp-price__second-line"><span class="andes-money-amount"><span class="andes-money-amount__fraction">189.999</span></span></div>
+    <figure class="ui-pdp-gallery__figure"><img class="ui-pdp-image" src="https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp"></figure>
+  </body></html>`;
+
+  assert.deepEqual(extractProductFromHtml(html), {
+    title: 'Producto visible real',
+    price: 189999,
+    image: 'https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp',
+  });
+});
+
+test('extrae del markdown renderizado titulo, precio actual e imagen mlstatic', () => {
+  const markdown = `Title: Producto visible real | Mercado Libre\nURL Source: https://www.mercadolibre.com.ar/p/MLA123\n\n~~$250.000~~\n\n$189.999\n\n6 cuotas de $31.666\n\n![Producto](https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp)`;
+  assert.deepEqual(extractProductFromMarkdown(markdown), {
+    title: 'Producto visible real',
+    price: 189999,
+    image: 'https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp',
+  });
+});
+
+test('prioriza Jina Reader renderizado y no llama a la API /items con OAuth', async () => {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(String(url));
@@ -62,43 +92,38 @@ test('prioriza la API publica del item sin OAuth y devuelve title, price e image
       ok: true,
       status: 200,
       url: String(url),
-      headers: { get: () => 'application/json' },
-      text: async () => JSON.stringify({
-        id: 'MLA1598228317',
-        title: 'Bolso Irimo de prueba',
-        price: 64908,
-        pictures: [
-          { secure_url: 'https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp' },
-        ],
-      }),
+      headers: { get: () => 'text/plain' },
+      text: async () => `Title: Bolso Irimo visible | Mercado Libre\n\n$64.908\n\n![Bolso](https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp)`,
     };
   };
 
   const product = await importMercadoLibreProduct(irimo, { fetchImpl });
   assert.deepEqual(product, {
-    title: 'Bolso Irimo de prueba',
+    title: 'Bolso Irimo visible',
     price: 64908,
     image: 'https://http2.mlstatic.com/D_NQ_NP_123-MLA123_012026-O.webp',
-    method: 'public-item-api',
+    method: 'jina-reader',
   });
-  assert.deepEqual(calls, ['https://api.mercadolibre.com/items/MLA1598228317']);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /^https:\/\/r\.jina\.ai\/https:\/\/www\.mercadolibre\.com\.ar\//);
+  assert.doesNotMatch(calls[0], /api\.mercadolibre\.com\/items/);
 });
 
-test('si la API publica falla, conserva los fallbacks existentes', async () => {
+test('si Jina falla, usa HTML directo como fallback', async () => {
   let count = 0;
   const fetchImpl = async (url) => {
     count += 1;
-    if (String(url).startsWith('https://api.mercadolibre.com/items/')) {
+    if (String(url).startsWith('https://r.jina.ai/')) {
       return {
-        ok: false, status: 401, url: String(url),
-        headers: { get: () => 'application/json' },
-        text: async () => '{"message":"unauthorized"}',
+        ok: false, status: 503, url: String(url),
+        headers: { get: () => 'text/plain' },
+        text: async () => 'unavailable',
       };
     }
     return {
       ok: true, status: 200, url: String(url),
       headers: { get: () => 'text/html' },
-      text: async () => `<!doctype html><meta property="og:title" content="Producto fallback | Mercado Libre"><meta property="og:image" content="https://http2.mlstatic.com/D_NQ_NP_456-MLA456_012026-O.webp"><script type="application/ld+json">{"@type":"Product","name":"Producto fallback","image":["https://http2.mlstatic.com/D_NQ_NP_456-MLA456_012026-O.webp"],"offers":{"@type":"Offer","price":"120000"}}</script>`,
+      text: async () => `<!doctype html><h1 class="ui-pdp-title">Producto fallback</h1><div class="ui-pdp-price__second-line"><span class="andes-money-amount__fraction">120.000</span></div><figure class="ui-pdp-gallery__figure"><img class="ui-pdp-image" src="https://http2.mlstatic.com/D_NQ_NP_456-MLA456_012026-O.webp"></figure>`,
     };
   };
 
@@ -106,5 +131,6 @@ test('si la API publica falla, conserva los fallbacks existentes', async () => {
   assert.equal(product.title, 'Producto fallback');
   assert.equal(product.price, 120000);
   assert.match(product.image, /mlstatic\.com/);
+  assert.equal(product.method, 'direct-html');
   assert.ok(count >= 2);
 });

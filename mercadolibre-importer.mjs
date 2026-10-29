@@ -308,6 +308,47 @@ function firstImageByClass(html, classFragment) {
   return normalizeImageCandidate(attrs.src || attrs['data-src'] || attrs.srcset?.split(/\s+/)[0]);
 }
 
+function sliceFromClass(html, classFragment, maxLength = 8000) {
+  const re = new RegExp(`class=["'][^"']*${classFragment}[^"']*["']`, 'i');
+  const match = re.exec(html);
+  if (!match) return '';
+  return html.slice(match.index, match.index + maxLength);
+}
+
+function firstImageInHtml(fragment) {
+  for (const match of String(fragment || '').matchAll(/<img\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(match[0]);
+    const candidates = [
+      attrs['data-zoom'],
+      attrs['data-src'],
+      attrs.src,
+      attrs.srcset?.split(/\s+/)[0],
+    ];
+    for (const candidate of candidates) {
+      const image = normalizeImageCandidate(candidate);
+      if (isValidProductImage(image)) return image;
+    }
+  }
+  return null;
+}
+
+function extractVisiblePdp(html) {
+  // Estos son los datos que ve el usuario en la PDP de Mercado Libre.
+  const title = normalizeTitle(firstClassText(html, 'ui-pdp-title'));
+
+  // Priorizamos la segunda línea/importe actual y no el precio anterior tachado.
+  const currentPriceSection = sliceFromClass(html, 'ui-pdp-price__second-line', 6000)
+    || sliceFromClass(html, 'ui-pdp-price__main-container', 8000);
+  const price = normalizePrice(firstClassText(currentPriceSection, 'andes-money-amount__fraction'));
+
+  // Priorizamos la imagen principal de la galería.
+  const gallerySection = sliceFromClass(html, 'ui-pdp-gallery__figure', 12000);
+  const image = firstImageInHtml(gallerySection)
+    || firstImageByClass(html, 'ui-pdp-image');
+
+  return { title, price, image };
+}
+
 function embeddedJsonFallback(html) {
   const decoded = html.replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
   const titleMatch = decoded.match(/"(?:title|name)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i);
@@ -328,28 +369,30 @@ export function looksBlocked(text, finalUrl = '') {
 export function extractProductFromHtml(html, finalUrl = '') {
   if (!html || looksBlocked(html, finalUrl)) throw new Error('Mercado Libre devolvió una página de verificación/bloqueo.');
   const meta = getMetaMap(html);
+  const visible = extractVisiblePdp(html);
   const json = fromJsonLd(html);
   const embedded = embeddedJsonFallback(html);
 
-  const title = json.title
+  // La PDP visible manda. Los metadatos se usan sólo como respaldo.
+  const title = visible.title
+    || json.title
     || normalizeTitle(meta.get('og:title'))
     || normalizeTitle(meta.get('twitter:title'))
-    || normalizeTitle(firstClassText(html, 'ui-pdp-title'))
     || embedded.title;
 
-  const price = json.price
+  const price = visible.price
+    || json.price
     || normalizePrice(meta.get('product:price:amount'))
     || normalizePrice(meta.get('og:price:amount'))
     || normalizePrice(meta.get('price'))
-    || normalizePrice(firstClassText(html, 'andes-money-amount__fraction'))
     || embedded.price;
 
   const imageCandidates = [
+    visible.image,
     json.image,
     meta.get('og:image'),
     meta.get('twitter:image'),
     meta.get('image'),
-    firstImageByClass(html, 'ui-pdp-image'),
     embedded.image,
   ].map(normalizeImageCandidate);
   const image = imageCandidates.find(isValidProductImage) || null;
@@ -361,23 +404,47 @@ export function extractProductFromHtml(html, finalUrl = '') {
   return { title, price, image };
 }
 
-function extractFromMarkdown(markdown, finalUrl = '') {
-  if (!markdown || looksBlocked(markdown, finalUrl)) throw new Error('El lector devolvió una página de verificación/bloqueo.');
-  const lines = String(markdown).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-  const title = lines
-    .filter((x) => /^#{1,3}\s+/.test(x))
-    .map((x) => normalizeTitle(x.replace(/^#{1,3}\s+/, '')))
-    .find(Boolean) || null;
-
-  let price = null;
-  for (const line of lines) {
-    if (line.includes('~~')) continue;
-    const m = line.match(/\$\s*([\d.]+(?:,\d{1,2})?)/);
-    if (m) { price = normalizePrice(m[1]); if (price) break; }
+export function extractProductFromMarkdown(markdown, finalUrl = '') {
+  if (!markdown || looksBlocked(markdown, finalUrl)) {
+    throw new Error('El lector devolvió una página de verificación/bloqueo.');
   }
 
-  const image = [...String(markdown).matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)]
-    .map((m) => normalizeImageCandidate(m[1]))
+  const source = String(markdown);
+  const lines = source.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+
+  const titleHeader = lines
+    .map((line) => line.match(/^Title:\s*(.+)$/i)?.[1])
+    .map(normalizeTitle)
+    .find(Boolean) || null;
+
+  const headingTitles = lines
+    .filter((line) => /^#{1,3}\s+/.test(line))
+    .map((line) => normalizeTitle(line.replace(/^#{1,3}\s+/, '')))
+    .filter(Boolean);
+
+  const title = titleHeader || headingTitles[0] || null;
+
+  // Elegimos el primer precio actual y descartamos precio anterior/cuotas/promos.
+  let price = null;
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (line.includes('~~')) continue;
+    if (/cuotas?|mercado cr[eé]dito|precio anterior|antes\s*\$|sin impuestos/.test(lower)) continue;
+    const matches = [...line.matchAll(/\$\s*([\d.]+(?:,\d{1,2})?)/g)];
+    for (const match of matches) {
+      const candidate = normalizePrice(match[1]);
+      if (candidate) { price = candidate; break; }
+    }
+    if (price) break;
+  }
+
+  // Reader puede devolver imágenes como markdown o como URLs sueltas/resumen.
+  const imageCandidates = [
+    ...[...source.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]),
+    ...[...source.matchAll(/https?:\/\/[^"'\s<>\])]+mlstatic\.com\/[^"'\s<>\])]+/gi)].map((m) => m[0]),
+  ];
+  const image = imageCandidates
+    .map((value) => normalizeImageCandidate(value))
     .find(isValidProductImage) || null;
 
   if (!title || !price || !image) {
@@ -414,34 +481,38 @@ export async function importMercadoLibreProduct(input, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch no está disponible en este runtime.');
 
-  const ids = extractMercadoLibreIds(input);
+  extractMercadoLibreIds(input); // valida host/URL y mantiene compatibilidad con la API.
   const normalized = normalizeMercadoLibreUrl(input);
-  const targets = [...new Set([input, normalized])];
+  const targets = [...new Set([normalized, input])];
   const errors = [];
 
-  // Intento 1: recurso publico del item. Para links compartidos de Mercado Libre
-  // el item_id identifica la publicacion concreta y entrega title, price y pictures.
-  // No se envia OAuth ni API key. Si Mercado Libre exige autenticacion o el
-  // recurso no esta disponible, seguimos con HTML/proxy como fallback.
-  if (ids.itemId) {
+  // Intento 1: Jina Reader. Renderiza la PDP con navegador y devuelve el contenido
+  // visible. Funciona sin API key con un límite gratuito inferior (20 RPM).
+  for (const target of targets) {
     try {
-      const apiUrl = `https://api.mercadolibre.com/items/${encodeURIComponent(ids.itemId)}`;
-      const r = await fetchText(fetchImpl, apiUrl, {
-        timeoutMs: options.timeoutMs ?? 12000,
-        headers: { accept: 'application/json' },
+      const readerUrl = `https://r.jina.ai/${target}`;
+      const r = await fetchText(fetchImpl, readerUrl, {
+        timeoutMs: options.timeoutMs ?? 26000,
+        headers: {
+          accept: 'text/plain,*/*',
+          'x-engine': 'browser',
+          'x-timeout': '18',
+          'x-wait-for-selector': '.ui-pdp-title',
+          'x-with-images-summary': 'true',
+          'x-cache-tolerance': '0',
+        },
       });
-      const payload = JSON.parse(r.text);
-      return fromPublicItemApiPayload(payload, ids.itemId);
+      return { ...extractProductFromMarkdown(r.text, r.finalUrl), method: 'jina-reader' };
     } catch (error) {
-      errors.push(`public-item-api:${error.message}`);
+      errors.push(`jina-reader:${error.message}`);
     }
   }
 
-  // Intento 2: HTML directo.
+  // Intento 2: HTML directo, priorizando título/precio/foto visibles.
   for (const target of targets) {
     try {
       const r = await fetchText(fetchImpl, target, { timeoutMs: options.timeoutMs });
-      return extractProductFromHtml(r.text, r.finalUrl);
+      return { ...extractProductFromHtml(r.text, r.finalUrl), method: 'direct-html' };
     } catch (error) {
       errors.push(`direct:${error.message}`);
     }
@@ -452,18 +523,18 @@ export async function importMercadoLibreProduct(input, options = {}) {
     try {
       const proxyUrl = `https://cors.tools/proxy?url=${encodeURIComponent(target)}`;
       const r = await fetchText(fetchImpl, proxyUrl, { timeoutMs: options.timeoutMs ?? 18000 });
-      return extractProductFromHtml(r.text, r.finalUrl);
+      return { ...extractProductFromHtml(r.text, r.finalUrl), method: 'cors-proxy' };
     } catch (error) {
       errors.push(`cors-proxy:${error.message}`);
     }
   }
 
-  // Intento 4: lector renderizado gratuito.
+  // Intento 4: lector renderizado gratuito alternativo.
   for (const target of targets) {
     try {
       const readUrl = `https://cors.tools/read?url=${encodeURIComponent(target)}&format=markdown&render=true`;
       const r = await fetchText(fetchImpl, readUrl, { timeoutMs: options.timeoutMs ?? 20000 });
-      return extractFromMarkdown(r.text, r.finalUrl);
+      return { ...extractProductFromMarkdown(r.text, r.finalUrl), method: 'cors-read' };
     } catch (error) {
       errors.push(`cors-read:${error.message}`);
     }
@@ -473,3 +544,4 @@ export async function importMercadoLibreProduct(input, options = {}) {
   e.causes = errors;
   throw e;
 }
+
