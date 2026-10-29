@@ -1,43 +1,84 @@
+const ML_HOST_RE = /(^|\.)mercadolibre\.com\.ar$/i;
 const ITEM_RE = /\bMLA\d{7,}\b/i;
 const PRODUCT_RE = /\b(?:MLA|MLAU)\d{7,}\b/i;
 
+const BLOCK_MARKERS = [
+  '/gz/account-verification',
+  'account-verification',
+  'captcha',
+  'recaptcha',
+  'verify you are human',
+  'verifica que eres humano',
+  'verificá que sos humano',
+  'access denied',
+  'request blocked',
+  'robot check',
+];
+
+const GENERIC_TITLES = [
+  'mercado libre',
+  'mercadolibre',
+  'verificación',
+  'verificacion',
+  'account verification',
+  'access denied',
+  'captcha',
+];
+
+function decodeRepeated(value) {
+  let out = String(value ?? '');
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const decoded = decodeURIComponent(out.replace(/\+/g, '%20'));
+      if (decoded === out) break;
+      out = decoded;
+    } catch {
+      break;
+    }
+  }
+  return out;
+}
+
 function firstMatch(value, regex) {
-  const match = String(value || '').match(regex);
+  const match = decodeRepeated(value).match(regex);
   return match ? match[0].toUpperCase() : null;
 }
 
 function itemFromFilter(value) {
-  const decoded = decodeURIComponent(String(value || ''));
-  const match = decoded.match(/(?:^|[,&])\s*item_id\s*[:=]\s*(MLA\d{7,})/i);
+  const decoded = decodeRepeated(value);
+  const match = decoded.match(/\bitem_id\s*[:=]\s*(MLA\d{7,})\b/i);
   return match ? match[1].toUpperCase() : null;
 }
 
-function parseHashParams(hash = '') {
+function paramsFromFragment(hash) {
   const raw = String(hash || '').replace(/^#/, '');
+  if (!raw || (!raw.includes('=') && !raw.includes('&'))) return new URLSearchParams();
   return new URLSearchParams(raw);
 }
 
 export function extractMercadoLibreIds(input) {
   const url = new URL(input);
-  const query = url.searchParams;
-  const hash = parseHashParams(url.hash);
-  const path = url.pathname;
-
-  const itemCandidates = [];
-  for (const value of [
-    query.get('pdp_filters'),
-    query.get('item_id'),
-    query.get('wid'),
-    hash.get('pdp_filters'),
-    hash.get('item_id'),
-    hash.get('wid'),
-  ]) {
-    const item = itemFromFilter(value) || firstMatch(value, ITEM_RE);
-    if (item) itemCandidates.push(item);
+  if (!ML_HOST_RE.test(url.hostname)) {
+    throw new Error('La URL no pertenece a Mercado Libre Argentina.');
   }
 
-  const articuloMatch = path.match(/\/articulo\/(MLA\d{7,})/i);
-  if (articuloMatch) itemCandidates.push(articuloMatch[1].toUpperCase());
+  const query = url.searchParams;
+  const fragment = paramsFromFragment(url.hash);
+  const path = decodeRepeated(url.pathname);
+
+  const itemCandidates = [
+    itemFromFilter(query.get('pdp_filters')),
+    firstMatch(query.get('item_id'), ITEM_RE),
+    firstMatch(query.get('wid'), ITEM_RE),
+    itemFromFilter(fragment.get('pdp_filters')),
+    firstMatch(fragment.get('item_id'), ITEM_RE),
+    firstMatch(fragment.get('wid'), ITEM_RE),
+  ].filter(Boolean);
+
+  const articuloMatch = path.match(/\/MLA-?(\d{7,})(?:-|\/|$)/i);
+  if (/articulo\./i.test(url.hostname) && articuloMatch) {
+    itemCandidates.push(`MLA${articuloMatch[1]}`);
+  }
 
   const catalogCandidates = [];
   const pMatch = path.match(/\/p\/(MLA\d{7,})(?:\/|$)/i);
@@ -63,34 +104,287 @@ export function extractMercadoLibreIds(input) {
 export function normalizeMercadoLibreUrl(input) {
   const url = new URL(input);
   const ids = extractMercadoLibreIds(input);
+
   if (ids.itemId && !itemFromFilter(url.searchParams.get('pdp_filters'))) {
     url.searchParams.set('pdp_filters', `item_id:${ids.itemId}`);
   }
-  for (const key of ['matt_tool', 'ua', 'action', 'sid', 'origin']) url.searchParams.delete(key);
+
+  for (const key of ['matt_tool', 'ua', 'action', 'sid', 'origin']) {
+    url.searchParams.delete(key);
+  }
   url.hash = '';
   return url.toString();
 }
 
-export function isValidProductImage(value) {
-  if (!value) return false;
-  try {
-    const url = new URL(String(value));
-    const host = url.hostname.toLowerCase();
-    const full = `${url.pathname}${url.search}`.toLowerCase();
-    return host.endsWith('mlstatic.com') && !/logo|favicon|navigation|brandmark|mercado[-_]?libre/.test(full);
-  } catch {
-    return false;
+function decodeHtml(value = '') {
+  return String(value)
+    .replace(/&quot;/gi, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&nbsp;/gi, ' ')
+    .trim();
+}
+
+function stripTags(value = '') {
+  return decodeHtml(String(value).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')).trim();
+}
+
+function parseTagAttributes(tag) {
+  const attrs = {};
+  const regex = /([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  let match;
+  while ((match = regex.exec(tag))) {
+    attrs[match[1].toLowerCase()] = decodeHtml(match[2] ?? match[3] ?? match[4] ?? '');
   }
+  return attrs;
+}
+
+function normalizeTitle(value) {
+  if (!value) return null;
+  const title = stripTags(value)
+    .replace(/\s*[|–-]\s*Mercado\s*Libre.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (title.length < 4) return null;
+  const lower = title.toLowerCase();
+  if (GENERIC_TITLES.some((generic) => lower === generic || lower.startsWith(`${generic} `))) return null;
+  return title;
 }
 
 function normalizePrice(value) {
   if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
-  let text = String(value || '').trim().replace(/[^\d.,-]/g, '');
+  if (!value) return null;
+
+  let text = stripTags(String(value)).replace(/[^\d.,-]/g, '');
   if (!text) return null;
-  if (text.includes(',')) text = text.replace(/\./g, '').replace(',', '.');
-  else if (/^\d{1,3}(?:\.\d{3})+$/.test(text)) text = text.replace(/\./g, '');
-  const number = Number(text);
-  return Number.isFinite(number) && number > 0 ? number : null;
+
+  if (text.includes(',')) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(text)) {
+    text = text.replace(/\./g, '');
+  }
+
+  const price = Number(text);
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function normalizeImageCandidate(value) {
+  if (!value) return null;
+  const raw = String(value)
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&')
+    .trim();
+  try {
+    return new URL(raw).toString();
+  } catch {
+    return null;
+  }
+}
+
+export function isValidProductImage(value) {
+  const normalized = normalizeImageCandidate(value);
+  if (!normalized) return false;
+  const url = new URL(normalized);
+  const host = url.hostname.toLowerCase();
+  const path = `${url.pathname}${url.search}`.toLowerCase();
+  if (!host.endsWith('mlstatic.com')) return false;
+  if (/logo|favicon|navigation|brandmark|mercado[-_]?libre/.test(path)) return false;
+  return true;
+}
+
+export function looksBlocked(text, finalUrl = '') {
+  const sample = `${finalUrl}\n${String(text || '').slice(0, 80000)}`.toLowerCase();
+  return BLOCK_MARKERS.some((marker) => sample.includes(marker));
+}
+
+function getMetaMap(html) {
+  const map = new Map();
+  for (const match of String(html).matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(match[0]);
+    const key = (attrs.property || attrs.name || attrs.itemprop || '').toLowerCase();
+    if (key && attrs.content && !map.has(key)) map.set(key, attrs.content);
+  }
+  return map;
+}
+
+function parseJsonLd(html) {
+  const values = [];
+  for (const match of String(html).matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    const raw = decodeHtml(match[1]).trim();
+    if (!raw) continue;
+    try {
+      values.push(JSON.parse(raw));
+    } catch {
+      // Mercado Libre puede incluir otros scripts no JSON; se ignoran.
+    }
+  }
+  return values;
+}
+
+function walk(value, visitor) {
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, visitor);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  visitor(value);
+  for (const nested of Object.values(value)) walk(nested, visitor);
+}
+
+function extractJsonLdProduct(html) {
+  const result = { title: null, price: null, image: null };
+  for (const doc of parseJsonLd(html)) {
+    walk(doc, (node) => {
+      const types = Array.isArray(node?.['@type']) ? node['@type'] : [node?.['@type']];
+      if (!types.some((type) => String(type).toLowerCase() === 'product')) return;
+      result.title ||= normalizeTitle(node.name || node.headline);
+      const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+      result.price ||= normalizePrice(offers?.price ?? offers?.lowPrice ?? offers?.highPrice);
+      const imageValue = Array.isArray(node.image) ? node.image[0] : node.image;
+      const image = normalizeImageCandidate(imageValue?.url || imageValue?.contentUrl || imageValue);
+      if (!result.image && isValidProductImage(image)) result.image = image;
+    });
+  }
+  return result;
+}
+
+function findTagTextByClass(html, className) {
+  const source = String(html || '');
+  const classRe = new RegExp(`<([a-z0-9]+)\\b[^>]*class=["'][^"']*\\b${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^"']*["'][^>]*>`, 'ig');
+  const open = classRe.exec(source);
+  if (!open) return null;
+  const tag = open[1];
+  const start = classRe.lastIndex;
+  const close = new RegExp(`</${tag}\\s*>`, 'ig');
+  close.lastIndex = start;
+  const end = close.exec(source);
+  if (!end) return null;
+  return stripTags(source.slice(start, end.index));
+}
+
+function sliceAroundMarker(html, markerRegex, maxLength = 30000) {
+  const source = String(html || '');
+  const match = markerRegex.exec(source);
+  if (!match) return '';
+  return source.slice(match.index, match.index + maxLength);
+}
+
+function metaPriceFromFragment(fragment) {
+  for (const tagMatch of String(fragment || '').matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(tagMatch[0]);
+    if (String(attrs.itemprop || '').toLowerCase() === 'price') {
+      const price = normalizePrice(attrs.content);
+      if (price) return price;
+    }
+  }
+  return null;
+}
+
+function hiddenPriceFromFragment(fragment) {
+  for (const match of String(fragment || '').matchAll(/<[^>]+class=["'][^"']*andes-visually-hidden[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/gi)) {
+    const text = stripTags(match[1]);
+    const amount = text.match(/(\d[\d.]*)\s*(?:pesos?|reais?|ars|\$)/i);
+    if (!amount) continue;
+    const cents = text.match(/(?:con|e)\s+(\d{1,2})\s+cent/i);
+    const price = normalizePrice(cents ? `${amount[1]},${cents[1]}` : amount[1]);
+    if (price) return price;
+  }
+  return null;
+}
+
+function visibleMoneyFromFragment(fragment) {
+  const source = String(fragment || '');
+  const fractionMarker = /class=["'][^"']*andes-money-amount__fraction[^"']*["'][^>]*>/i.exec(source);
+  if (!fractionMarker) return null;
+  const after = source.slice(fractionMarker.index + fractionMarker[0].length, fractionMarker.index + fractionMarker[0].length + 100);
+  const fractionText = stripTags(after.split(/<\//)[0]);
+  if (!fractionText) return null;
+
+  const centsMarker = /class=["'][^"']*andes-money-amount__cents[^"']*["'][^>]*>/i.exec(source.slice(fractionMarker.index));
+  let cents = null;
+  if (centsMarker) {
+    const centsAfter = source.slice(fractionMarker.index + centsMarker.index + centsMarker[0].length, fractionMarker.index + centsMarker.index + centsMarker[0].length + 40);
+    cents = stripTags(centsAfter.split(/<\//)[0]);
+  }
+  return normalizePrice(cents ? `${fractionText},${cents}` : fractionText);
+}
+
+function extractPriceFromHtml(html, meta, jsonLd) {
+  // 1) Mercado Libre publica el precio actual como <meta itemProp="price" content="...">
+  // dentro del bloque #price. Es la fuente mas estable y evita confundir cuotas/precio tachado.
+  const priceBlock = sliceAroundMarker(html, /<[^>]+(?:id=["']price["']|class=["'][^"']*ui-pdp-container__row--price[^"']*["'])[^>]*>/i, 35000);
+  const secondLine = sliceAroundMarker(priceBlock || html, /class=["'][^"']*ui-pdp-price__second-line[^"']*["']/i, 12000);
+
+  return metaPriceFromFragment(secondLine)
+    || metaPriceFromFragment(priceBlock)
+    || hiddenPriceFromFragment(secondLine)
+    || visibleMoneyFromFragment(secondLine)
+    || jsonLd.price
+    || normalizePrice(meta.get('product:price:amount'))
+    || normalizePrice(meta.get('og:price:amount'))
+    || normalizePrice(meta.get('price'))
+    || null;
+}
+
+function firstValidImageInHtml(fragment) {
+  for (const match of String(fragment || '').matchAll(/<img\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(match[0]);
+    const srcset = String(attrs.srcset || '')
+      .split(',')
+      .map((entry) => entry.trim().split(/\s+/)[0])
+      .filter(Boolean)
+      .reverse();
+    const candidates = [attrs['data-zoom'], ...srcset, attrs['data-src'], attrs.src];
+    for (const candidate of candidates) {
+      const normalized = normalizeImageCandidate(candidate);
+      if (isValidProductImage(normalized)) return normalized;
+    }
+  }
+  return null;
+}
+
+function extractTitleFromHtml(html, meta, jsonLd) {
+  const h1 = String(html || '').match(/<h1\b[^>]*class=["'][^"']*ui-pdp-title[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i);
+  const itemName = String(html || '').match(/<[^>]+itemprop=["']name["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
+  const pageTitle = String(html || '').match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+
+  return normalizeTitle(h1?.[1])
+    || jsonLd.title
+    || normalizeTitle(meta.get('og:title'))
+    || normalizeTitle(meta.get('twitter:title'))
+    || normalizeTitle(itemName?.[1])
+    || normalizeTitle(pageTitle?.[1])
+    || null;
+}
+
+function extractImageFromHtml(html, meta, jsonLd) {
+  const gallery = sliceAroundMarker(html, /class=["'][^"']*ui-pdp-gallery__figure[^"']*["']/i, 30000);
+  return firstValidImageInHtml(gallery)
+    || firstValidImageInHtml(sliceAroundMarker(html, /class=["'][^"']*ui-pdp-image[^"']*["']/i, 20000))
+    || [meta.get('og:image'), meta.get('twitter:image'), meta.get('image')]
+      .map(normalizeImageCandidate)
+      .find(isValidProductImage)
+    || jsonLd.image
+    || null;
+}
+
+export function extractProductFromHtml(html, finalUrl = '') {
+  if (!html || looksBlocked(html, finalUrl)) {
+    throw new Error('Browserless recibió una página de verificación o bloqueo de Mercado Libre.');
+  }
+
+  const meta = getMetaMap(html);
+  const jsonLd = extractJsonLdProduct(html);
+  const title = extractTitleFromHtml(html, meta, jsonLd);
+  const price = extractPriceFromHtml(html, meta, jsonLd);
+  const image = extractImageFromHtml(html, meta, jsonLd);
+  const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean);
+
+  return { title, price, image, missing };
 }
 
 function browserlessError(status, bodyText = '') {
@@ -98,7 +392,7 @@ function browserlessError(status, bodyText = '') {
     return new Error('Browserless rechazó BROWSERLESS_TOKEN. Revisá la variable de entorno en Vercel.');
   }
   if (status === 429) return new Error('Browserless no tiene unidades/concurrencia disponibles en este momento.');
-  const cleaned = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 240);
+  const cleaned = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 220);
   return new Error(`Browserless respondió HTTP ${status}${cleaned ? `: ${cleaned}` : ''}`);
 }
 
@@ -115,102 +409,7 @@ async function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
   }
 }
 
-const BROWSER_FUNCTION = String.raw`
-export default async ({ page, context }) => {
-  const out = { title: null, price: null, image: null, debug: {} };
-
-  try {
-    await page.setViewport({ width: 1366, height: 900, deviceScaleFactor: 1 });
-    await page.goto(context.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.waitForSelector('h1.ui-pdp-title', { timeout: 12000 });
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-
-    out.title = await page.$eval('h1.ui-pdp-title', (el) => el.textContent?.trim() || null).catch(() => null);
-
-    const priceData = await page.evaluate(() => {
-      const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
-      const visible = (el) => {
-        if (!el) return false;
-        const style = getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-      };
-      const parseAmount = (el) => {
-        if (!el || !visible(el)) return null;
-        const fraction = clean(el.querySelector('.andes-money-amount__fraction')?.textContent);
-        const cents = clean(el.querySelector('.andes-money-amount__cents')?.textContent);
-        if (!fraction) return null;
-        const integer = fraction.replace(/\./g, '').replace(/\D/g, '');
-        if (!integer) return null;
-        return cents ? Number(integer + '.' + cents.replace(/\D/g, '').slice(0, 2)) : Number(integer);
-      };
-
-      const selectors = [
-        '#price .ui-pdp-price__second-line .andes-money-amount',
-        '#price .ui-pdp-price__main-container .andes-money-amount',
-        '#price .andes-money-amount',
-        '[itemprop="offers"] [itemprop="price"]',
-        'meta[itemprop="price"]'
-      ];
-
-      const candidates = [];
-      for (const selector of selectors) {
-        for (const el of document.querySelectorAll(selector)) {
-          const original = el.closest('.ui-pdp-price__original-value, s, del, [data-testid*="original"]');
-          const amount = el.tagName === 'META'
-            ? Number(el.getAttribute('content'))
-            : parseAmount(el);
-          candidates.push({
-            selector,
-            amount: Number.isFinite(amount) && amount > 0 ? amount : null,
-            text: clean(el.textContent || el.getAttribute?.('content')),
-            original: Boolean(original),
-            visible: el.tagName === 'META' ? true : visible(el),
-          });
-        }
-      }
-
-      const preferred = candidates.find((c) => c.amount && !c.original && c.selector.includes('second-line'))
-        || candidates.find((c) => c.amount && !c.original && c.visible)
-        || candidates.find((c) => c.amount && !c.original)
-        || null;
-
-      return { value: preferred?.amount || null, candidates: candidates.slice(0, 12) };
-    }).catch(() => ({ value: null, candidates: [] }));
-
-    out.price = priceData.value;
-    out.debug.priceCandidates = priceData.candidates;
-
-    const imageData = await page.evaluate(() => {
-      const selectors = [
-        'figure.ui-pdp-gallery__figure img.ui-pdp-image',
-        '.ui-pdp-gallery__figure img',
-        'img.ui-pdp-image',
-        'meta[property="og:image"]'
-      ];
-      for (const selector of selectors) {
-        const el = document.querySelector(selector);
-        if (!el) continue;
-        if (el.tagName === 'META') return el.getAttribute('content');
-        const srcset = String(el.getAttribute('srcset') || '').split(',').map((x) => x.trim().split(/\s+/)[0]).filter(Boolean);
-        return el.currentSrc || srcset[srcset.length - 1] || el.getAttribute('data-zoom') || el.getAttribute('data-src') || el.getAttribute('src');
-      }
-      return null;
-    }).catch(() => null);
-
-    out.image = imageData;
-    out.debug.url = page.url();
-    out.debug.pageTitle = await page.title().catch(() => null);
-  } catch (error) {
-    out.debug.error = error?.message || String(error);
-    out.debug.url = page.url();
-  }
-
-  return { data: out, type: 'application/json' };
-};
-`;
-
-async function fetchViaBrowserlessFunction(fetchImpl, target, options = {}) {
+async function browserlessUnblock(fetchImpl, target, options = {}) {
   const token = options.browserlessToken || process.env.BROWSERLESS_TOKEN;
   if (!token) {
     const error = new Error('Falta BROWSERLESS_TOKEN en las Environment Variables de Vercel.');
@@ -229,10 +428,27 @@ async function fetchViaBrowserlessFunction(fetchImpl, target, options = {}) {
     timeout: String(Math.min(timeoutMs, 45000)),
   });
 
-  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/function?${params.toString()}`, {
+  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/unblock?${params.toString()}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-    body: JSON.stringify({ code: BROWSER_FUNCTION, context: { url: target } }),
+    body: JSON.stringify({
+      url: target,
+      content: true,
+      cookies: false,
+      screenshot: false,
+      browserWSEndpoint: false,
+      bestAttempt: true,
+      gotoOptions: {
+        waitUntil: 'domcontentloaded',
+        timeout: Math.min(Math.max(timeoutMs - 6000, 8000), 22000),
+      },
+      // No esperamos un selector fijo. Mercado Libre tiene variantes de DOM/AB tests.
+      // Dejamos un tiempo corto para que se hidraten precio e imagen.
+      waitForTimeout: 2500,
+      setExtraHTTPHeaders: {
+        'Accept-Language': 'es-AR,es;q=0.9',
+      },
+    }),
   }, timeoutMs);
 
   const raw = await response.text();
@@ -242,8 +458,10 @@ async function fetchViaBrowserlessFunction(fetchImpl, target, options = {}) {
   try { payload = JSON.parse(raw); }
   catch { throw new Error('Browserless devolvió una respuesta JSON inválida.'); }
 
-  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
-  return data || {};
+  if (!payload?.content || typeof payload.content !== 'string') {
+    throw new Error('Browserless no devolvió el HTML renderizado de la ficha.');
+  }
+  return payload.content;
 }
 
 export async function importMercadoLibreProduct(input, options = {}) {
@@ -252,25 +470,16 @@ export async function importMercadoLibreProduct(input, options = {}) {
 
   const ids = extractMercadoLibreIds(input);
   const normalized = normalizeMercadoLibreUrl(input);
-  const raw = await fetchViaBrowserlessFunction(fetchImpl, normalized, options);
+  const html = await browserlessUnblock(fetchImpl, normalized, options);
+  const product = extractProductFromHtml(html, normalized);
 
-  const title = String(raw.title || '').trim() || null;
-  const price = normalizePrice(raw.price);
-  const image = isValidProductImage(raw.image) ? String(raw.image) : null;
-  const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean);
-
-  if (!title && !price && !image) {
-    const debugError = raw?.debug?.error ? ` ${raw.debug.error}` : '';
-    throw new Error(`Browserless abrió la ficha pero no pudo extraer datos.${debugError}`);
+  if (!product.title && !product.price && !product.image) {
+    throw new Error('Browserless abrió la ficha, pero no encontró datos de producto utilizables.');
   }
 
   return {
-    title,
-    price,
-    image,
-    missing,
-    debug: raw.debug || {},
-    method: 'browserless-function-residential-ar',
+    ...product,
+    method: 'browserless-unblock-residential-ar',
     ids,
   };
 }

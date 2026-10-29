@@ -4,11 +4,32 @@ import {
   extractMercadoLibreIds,
   normalizeMercadoLibreUrl,
   isValidProductImage,
+  extractProductFromHtml,
   importMercadoLibreProduct,
 } from './mercadolibre-importer.mjs';
 
 const URL_1 = 'https://www.mercadolibre.com.ar/p/MLA24365049?matt_tool=89488245&pdp_filters=item_id:MLA1598228317&ua=x#origin=share&sid=share&wid=MLA1598228317&action=copy';
 const URL_2 = 'https://www.mercadolibre.com.ar/zapatillas/adidas/up/MLAU3674909961?pdp_filters=item_id%3AMLA2675701986&applied_product_filters=MLAU3683124066';
+const IMAGE = 'https://http2.mlstatic.com/D_NQ_NP_2X_951732-MLA99939891445_112025-F.webp';
+
+const REALISTIC_HTML = `<!doctype html><html><head>
+<meta property="og:title" content="Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm">
+<meta property="og:image" content="${IMAGE}">
+</head><body>
+<h1 class="ui-pdp-title">Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm</h1>
+<div id="price" class="ui-pdp-container__row ui-pdp-container__row--price">
+  <div class="ui-pdp-price__original-value"><span class="andes-money-amount__fraction">181.999</span></div>
+  <div class="ui-pdp-price__second-line">
+    <span class="andes-money-amount ui-pdp-price__part" itemProp="offers" itemscope>
+      <span class="andes-visually-hidden">110579 pesos con 03 centavos</span>
+      <meta itemProp="price" content="110579.03"/>
+      <span class="andes-money-amount__fraction">110.579</span>
+      <span class="andes-money-amount__cents">03</span>
+    </span>
+  </div>
+</div>
+<figure class="ui-pdp-gallery__figure"><img class="ui-pdp-image" src="${IMAGE}"></figure>
+</body></html>`;
 
 test('extrae publicación y catálogo del bolso', () => {
   const ids = extractMercadoLibreIds(URL_1);
@@ -31,11 +52,43 @@ test('mueve wid del fragmento a pdp_filters y elimina tracking', () => {
 });
 
 test('rechaza logo como imagen de producto', () => {
-  assert.equal(isValidProductImage('https://http2.mlstatic.com/frontend-assets/ml-web-navigation/ui-navigation/6.6.92/mercadolibre/logo__large.png'), false);
-  assert.equal(isValidProductImage('https://http2.mlstatic.com/D_NQ_NP_2X_123456-MLA123456789-F.webp'), true);
+  assert.equal(isValidProductImage('https://http2.mlstatic.com/frontend-assets/ml-web-navigation/ui-navigation/logo__large.png'), false);
+  assert.equal(isValidProductImage(IMAGE), true);
 });
 
-test('usa Browserless /function con proxy residencial AR y devuelve producto completo', async () => {
+test('extrae título, precio actual e imagen del DOM realista y no el precio tachado', () => {
+  const product = extractProductFromHtml(REALISTIC_HTML, URL_1);
+  assert.equal(product.title, 'Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm');
+  assert.equal(product.price, 110579.03);
+  assert.equal(product.image, IMAGE);
+  assert.deepEqual(product.missing, []);
+});
+
+test('si no hay h1 usa Open Graph + meta itemprop price + og:image', () => {
+  const html = `<!doctype html><html><head>
+    <meta property="og:title" content="Producto desde Open Graph">
+    <meta property="og:image" content="${IMAGE}">
+  </head><body>
+    <div id="price"><div class="ui-pdp-price__second-line"><meta itemprop="price" content="62066"></div></div>
+  </body></html>`;
+  const product = extractProductFromHtml(html, URL_1);
+  assert.equal(product.title, 'Producto desde Open Graph');
+  assert.equal(product.price, 62066);
+  assert.equal(product.image, IMAGE);
+});
+
+test('usa JSON-LD Product como fallback completo', () => {
+  const html = `<!doctype html><html><head><script type="application/ld+json">${JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'Product', name: 'Producto JSON-LD', image: IMAGE,
+    offers: { '@type': 'Offer', price: '99999.50', priceCurrency: 'ARS' },
+  })}</script></head><body></body></html>`;
+  const product = extractProductFromHtml(html, URL_1);
+  assert.equal(product.title, 'Producto JSON-LD');
+  assert.equal(product.price, 99999.5);
+  assert.equal(product.image, IMAGE);
+});
+
+test('Browserless usa /unblock residencial AR sin waitForSelector rígido', async () => {
   let capturedUrl = '';
   let capturedBody = null;
   const fakeFetch = async (url, options) => {
@@ -44,14 +97,7 @@ test('usa Browserless /function con proxy residencial AR y devuelve producto com
     return {
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        data: {
-          title: 'Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm',
-          price: 110579.03,
-          image: 'https://http2.mlstatic.com/D_NQ_NP_2X_951732-MLA99939891445_112025-F.webp',
-          debug: { priceCandidates: [] },
-        },
-      }),
+      text: async () => JSON.stringify({ content: REALISTIC_HTML }),
     };
   };
 
@@ -59,52 +105,37 @@ test('usa Browserless /function con proxy residencial AR y devuelve producto com
     fetchImpl: fakeFetch,
     browserlessToken: 'test-token',
     browserlessBaseUrl: 'https://browserless.test',
-    timeoutMs: 1000,
+    timeoutMs: 10000,
   });
 
   const requestUrl = new URL(capturedUrl);
-  assert.equal(requestUrl.pathname, '/function');
+  assert.equal(requestUrl.pathname, '/unblock');
   assert.equal(requestUrl.searchParams.get('token'), 'test-token');
   assert.equal(requestUrl.searchParams.get('proxy'), 'residential');
   assert.equal(requestUrl.searchParams.get('proxyCountry'), 'ar');
   assert.equal(requestUrl.searchParams.get('proxySticky'), 'true');
-  assert.match(capturedBody.code, /ui-pdp-price__second-line/);
-  assert.equal(capturedBody.context.url.includes('mercadolibre.com.ar'), true);
-  assert.equal(product.title, 'Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm');
+  assert.equal('waitForSelector' in capturedBody, false);
+  assert.equal(capturedBody.waitForTimeout, 2500);
   assert.equal(product.price, 110579.03);
-  assert.match(product.image, /mlstatic\.com/);
-  assert.deepEqual(product.missing, []);
-  assert.equal(product.method, 'browserless-function-residential-ar');
+  assert.equal(product.method, 'browserless-unblock-residential-ar');
 });
 
-test('devuelve resultado parcial en vez de descartar título e imagen si falta precio', async () => {
-  const fakeFetch = async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({
-      data: {
-        title: 'Producto real',
-        price: null,
-        image: 'https://http2.mlstatic.com/D_NQ_NP_2X_123456-MLA123456789-F.webp',
-        debug: { priceCandidates: [] },
-      },
-    }),
-  });
-
+test('devuelve resultado parcial si Browserless trae solo título e imagen', async () => {
+  const partial = `<html><head><meta property="og:title" content="Producto real"><meta property="og:image" content="${IMAGE}"></head><body></body></html>`;
+  const fakeFetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ content: partial }) });
   const product = await importMercadoLibreProduct(URL_1, {
     fetchImpl: fakeFetch,
     browserlessToken: 'test-token',
     browserlessBaseUrl: 'https://browserless.test',
-    timeoutMs: 1000,
+    timeoutMs: 10000,
   });
-
   assert.equal(product.title, 'Producto real');
   assert.equal(product.price, null);
-  assert.match(product.image, /mlstatic\.com/);
+  assert.equal(product.image, IMAGE);
   assert.deepEqual(product.missing, ['price']);
 });
 
-test('falla de forma explícita si falta BROWSERLESS_TOKEN', async () => {
+test('falla explícitamente si falta BROWSERLESS_TOKEN', async () => {
   const original = process.env.BROWSERLESS_TOKEN;
   delete process.env.BROWSERLESS_TOKEN;
   try {

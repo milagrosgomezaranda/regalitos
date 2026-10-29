@@ -1,14 +1,11 @@
-# Validación Browserless DOM
+# Regalitos Browserless v4
 
-- Browserless `/function` ejecuta Puppeteer remoto y extrae directamente del DOM.
-- Proxy residencial Argentina + sesión sticky.
-- Título: `h1.ui-pdp-title`.
-- Precio: prioriza `#price .ui-pdp-price__second-line .andes-money-amount`; excluye precio original/tachado y conserva candidatos de diagnóstico.
-- Imagen: prioriza primera imagen principal de la galería y valida dominio `mlstatic.com`.
-- El frontend acepta respuestas parciales: si falta un campo, completa los demás.
+Corrección puntual del importador de Mercado Libre.
 
-Validación local:
-- `node --check mercadolibre-importer.mjs`: PASS
-- `node --check api/product.js`: PASS
-- `node --check src/main.js`: PASS
-- `node --test mercadolibre-importer.test.mjs`: 7/7 PASS
+- Se elimina `/function` y su `waitForSelector('h1.ui-pdp-title')` rígido.
+- Se usa `/unblock` + proxy residencial AR, que ya demostró abrir la ficha desde Vercel.
+- No se espera un selector único: Mercado Libre puede cambiar el DOM por A/B tests.
+- Título: h1 -> JSON-LD -> Open Graph -> itemprop -> title.
+- Precio: `meta itemprop="price"` dentro de `#price`/`ui-pdp-price__second-line` -> texto accesible -> fracción/centavos -> JSON-LD -> metas globales.
+- Imagen: galería principal -> `ui-pdp-image` -> Open Graph -> JSON-LD.
+- Si falta un campo pero hay otros válidos, la API responde parcial para que el formulario complete lo encontrado.

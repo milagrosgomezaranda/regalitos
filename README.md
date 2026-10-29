@@ -1,32 +1,31 @@
 # Regalitos
 
-Versión del importador de Mercado Libre usando Browserless.
+Aplicación Vite + Supabase con importador de productos de Mercado Libre.
 
-## Importador
+## Importador Mercado Libre
 
-`/api/product` envía la URL a Browserless `/unblock`, con navegador real y proxy residencial de Argentina. Browserless devuelve el HTML renderizado y la aplicación extrae:
+`GET /api/product?url=<URL>` usa Browserless con `BROWSERLESS_TOKEN` configurado en Vercel.
 
-- `h1.ui-pdp-title` para el título visible.
-- `.ui-pdp-price__second-line .andes-money-amount__fraction` + cents para el precio actual.
-- la primera `img.ui-pdp-image` de la galería para la foto real de `mlstatic.com`.
+Flujo actual:
 
-No se ejecuta Chromium dentro de Vercel y no se usan Jina Reader, cors.tools ni la API privada de Mercado Libre.
-
-## Variable obligatoria en Vercel
-
-`BROWSERLESS_TOKEN`
-
-Guardarla en Settings > Environment Variables. No debe estar escrita en el repositorio.
+1. Normaliza la URL y recupera `item_id` / catálogo.
+2. Browserless `/unblock` abre Mercado Libre con proxy residencial de Argentina.
+3. No espera un selector rígido.
+4. Extrae:
+   - título desde DOM / JSON-LD / Open Graph;
+   - precio actual desde `meta[itemprop="price"]` dentro del bloque `#price`, luego fallbacks;
+   - imagen desde la galería principal / Open Graph / JSON-LD.
+5. Si consigue solo parte de los datos, el frontend completa lo válido en vez de descartar todo.
 
 ## Vercel
 
-- Framework: Vite
+- Framework Preset: Vite
 - Output Directory: dist
+- Variable de entorno requerida: `BROWSERLESS_TOKEN`
 
-## Desarrollo
+## Validación
 
 ```bash
-npm install
-npm run test
+npm test
 npm run build
 ```
