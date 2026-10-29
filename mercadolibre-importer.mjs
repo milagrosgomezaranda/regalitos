@@ -227,6 +227,46 @@ function normalizePrice(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function fromPublicItemApiPayload(payload, expectedItemId = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('La API publica de Mercado Libre devolvio una respuesta invalida.');
+  }
+
+  const id = String(payload.id || '').toUpperCase();
+  if (expectedItemId && id && id !== expectedItemId.toUpperCase()) {
+    throw new Error(`La API devolvio un item distinto (${id}).`);
+  }
+
+  const title = normalizeTitle(payload.title);
+  const price = normalizePrice(
+    payload.price
+    ?? payload.sale_price?.amount
+    ?? payload.sale_price
+    ?? payload.base_price
+  );
+
+  const imageCandidates = [
+    ...(Array.isArray(payload.pictures)
+      ? payload.pictures.flatMap((picture) => [picture?.secure_url, picture?.url])
+      : []),
+    payload.secure_thumbnail,
+    payload.thumbnail,
+  ]
+    .map(normalizeImageCandidate)
+    .filter(Boolean);
+
+  const image = imageCandidates.find(isValidProductImage) || null;
+
+  if (!title || !price || !image) {
+    const missing = [!title && 'title', !price && 'price', !image && 'image']
+      .filter(Boolean)
+      .join(', ');
+    throw new Error(`La API publica devolvio datos incompletos; faltan: ${missing}.`);
+  }
+
+  return { title, price, image, method: 'public-item-api' };
+}
+
 function offerPrice(offers) {
   if (Array.isArray(offers)) {
     for (const offer of offers) {
@@ -374,10 +414,30 @@ export async function importMercadoLibreProduct(input, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch no está disponible en este runtime.');
 
+  const ids = extractMercadoLibreIds(input);
   const normalized = normalizeMercadoLibreUrl(input);
   const targets = [...new Set([input, normalized])];
   const errors = [];
 
+  // Intento 1: recurso publico del item. Para links compartidos de Mercado Libre
+  // el item_id identifica la publicacion concreta y entrega title, price y pictures.
+  // No se envia OAuth ni API key. Si Mercado Libre exige autenticacion o el
+  // recurso no esta disponible, seguimos con HTML/proxy como fallback.
+  if (ids.itemId) {
+    try {
+      const apiUrl = `https://api.mercadolibre.com/items/${encodeURIComponent(ids.itemId)}`;
+      const r = await fetchText(fetchImpl, apiUrl, {
+        timeoutMs: options.timeoutMs ?? 12000,
+        headers: { accept: 'application/json' },
+      });
+      const payload = JSON.parse(r.text);
+      return fromPublicItemApiPayload(payload, ids.itemId);
+    } catch (error) {
+      errors.push(`public-item-api:${error.message}`);
+    }
+  }
+
+  // Intento 2: HTML directo.
   for (const target of targets) {
     try {
       const r = await fetchText(fetchImpl, target, { timeoutMs: options.timeoutMs });
@@ -387,6 +447,7 @@ export async function importMercadoLibreProduct(input, options = {}) {
     }
   }
 
+  // Intento 3: proxy HTML gratuito.
   for (const target of targets) {
     try {
       const proxyUrl = `https://cors.tools/proxy?url=${encodeURIComponent(target)}`;
@@ -397,6 +458,7 @@ export async function importMercadoLibreProduct(input, options = {}) {
     }
   }
 
+  // Intento 4: lector renderizado gratuito.
   for (const target of targets) {
     try {
       const readUrl = `https://cors.tools/read?url=${encodeURIComponent(target)}&format=markdown&render=true`;
