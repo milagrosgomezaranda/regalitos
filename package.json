@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test mercadolibre-importer.test.mjs"
+    "test": "node --test mercadolibre-importer.test.mjs",
+    "test:live": "node live-check.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1"

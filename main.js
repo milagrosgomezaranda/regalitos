@@ -646,19 +646,6 @@ async function compressImage(dataUrl) {
   return canvas.toDataURL('image/jpeg', 0.65);
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    const data = await response.json().catch(() => ({}));
-    return { response, data };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function fetchProduct() {
   const form = document.querySelector('#gift-form');
   if (!form) return;
@@ -673,56 +660,48 @@ async function fetchProduct() {
   }
 
   button.disabled = true;
-  msg.textContent = 'Buscando nombre y foto del producto…';
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 26000);
+  msg.textContent = 'Buscando los datos del producto…';
 
   try {
-    const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    });
-
+    const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok) throw new Error(data.error || 'No se pudo leer la ficha de Mercado Libre.');
 
-    const title = String(data.title || '').trim();
-    const image = String(data.image || '').trim();
-    const price = Number(data.price);
-    const loaded = [];
-    const missing = [];
+    if (!response.ok) {
+      throw new Error(data.error || 'No se pudieron obtener los datos de la tienda.');
+    }
 
-    if (title) {
-      form.elements.title.value = title;
-      loaded.push('nombre');
-    } else missing.push('nombre');
+    const product = data.product || data.item || data;
+    const title = product.title || product.name || product.productName || '';
+    const image = product.image || product.image_url || product.thumbnail || product.picture || '';
+    const price = product.price ?? product.amount ?? product.sale_price ?? null;
 
-    if (Number.isFinite(price) && price > 0) {
-      form.elements.price.value = String(Math.round(price));
-      loaded.push('precio');
-    } else missing.push('precio');
+    if (title && title.trim() && title.trim().toLowerCase() !== 'mercado libre') {
+      form.elements.title.value = title.trim();
+    }
 
     if (image) {
       form.elements.image_url.value = image;
       updatePhotoPreview();
-      loaded.push('foto');
-    } else missing.push('foto');
+    }
 
-    if (!loaded.length) throw new Error('No se pudo obtener nombre ni foto del producto.');
+    if (price !== null && price !== '' && Number.isFinite(Number(price))) {
+      form.elements.price.value = String(Math.round(Number(price)));
+    }
 
-    const elapsed = Number(data.elapsedMs);
-    const timing = Number.isFinite(elapsed) ? ` en ${(elapsed / 1000).toFixed(1)} s` : '';
-    msg.textContent = missing.length
-      ? `Se cargaron ${loaded.join(', ')}${timing}. Falta ${missing.join(', ')}.`
-      : `Nombre, precio y foto cargados${timing}. Revisalos antes de guardar.`;
+    const found = [
+      Boolean(title && title.trim() && title.trim().toLowerCase() !== 'mercado libre'),
+      Boolean(image),
+      price !== null && price !== '' && Number.isFinite(Number(price)),
+    ].filter(Boolean).length;
+
+    msg.textContent = found === 3
+      ? 'Encontramos el nombre, el precio y la foto. Revisalos antes de guardar.'
+      : found > 0
+        ? `Encontramos ${found} dato${found === 1 ? '' : 's'} útil${found === 1 ? '' : 'es'}. Completá lo que falte antes de guardar.`
+        : 'No pudimos leer los datos de esa tienda. Podés elegir la foto desde tu celular y completar el nombre y el precio manualmente.';
   } catch (error) {
-    msg.textContent = error?.name === 'AbortError'
-      ? 'La búsqueda de la foto tardó demasiado. Probá nuevamente.'
-      : (error?.message || 'No se pudieron obtener los datos del producto.');
+    msg.textContent = `${error.message || 'No se pudieron obtener los datos.'} Podés elegir una foto desde tu celular y completar el resto manualmente.`;
   } finally {
-    clearTimeout(timer);
     if (button.isConnected) button.disabled = false;
   }
 }

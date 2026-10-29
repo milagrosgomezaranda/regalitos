@@ -1,17 +1,29 @@
-import { extractMercadoLibreIds, importMercadoLibreProduct } from './mercadolibre-importer.mjs';
+import { importMercadoLibreProduct } from './mercadolibre-importer.mjs';
 
-const urls = [
-  ['Bolso Irimo', 'https://www.mercadolibre.com.ar/p/MLA24365049?matt_tool=89488245&pdp_filters=item_id:MLA1598228317&ua=5PF0k8YicT0vdd8UstmNrSMZpIf3q2zzhbnr9O9SvE9PmF8#origin=share&sid=share&wid=MLA1598228317&action=copy'],
-  ['Producto 2', 'https://www.mercadolibre.com.ar/p/MLA78853394?matt_tool=89488245&pdp_filters=item_id:MLA2060802049&ua=ck5Fa9611MR9NEYBUiNtlTFkYzxxL5mTdmwhHzBjkckP_tY#origin=share&sid=share&wid=MLA2060802049&action=copy'],
-];
+const token = process.env.MELI_ACCESS_TOKEN || process.env.MELI_TOKEN;
+const urls = process.argv.slice(2);
 
-for (const [name, url] of urls) {
-  console.log(`\n[${name}]`, extractMercadoLibreIds(url));
+if (!token) {
+  console.error('Falta MELI_ACCESS_TOKEN. Ejemplo PowerShell: $env:MELI_ACCESS_TOKEN = "..."');
+  process.exit(1);
+}
+
+if (urls.length === 0) {
+  console.error('Pasá uno o más links reales de Mercado Libre como argumentos.');
+  process.exit(1);
+}
+
+for (const url of urls) {
+  console.log('\n============================================================');
+  console.log(url);
+  console.log('============================================================');
   try {
-    console.log(await importMercadoLibreProduct(url));
+    const result = await importMercadoLibreProduct(url, { token });
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    console.error('FAIL:', error.message);
-    for (const cause of error.causes || []) console.error(' -', cause);
-    process.exitCode = 1;
+    console.error(JSON.stringify({
+      error: error.message,
+      details: error.causes || null,
+    }, null, 2));
   }
 }
