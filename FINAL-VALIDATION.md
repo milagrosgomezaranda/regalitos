@@ -1,13 +1,14 @@
-# Validación
+# Validación Browserless DOM
 
-- `api/product.js`: único endpoint del importador.
-- `mercadolibre-importer.mjs`: extracción de IDs, HTML visible, Open Graph/JSON-LD y lectores renderizados.
-- Sin Playwright, Chromium, Gemini, OAuth ni API keys.
-- Jina Reader y cors.tools se ejecutan en paralelo para reducir tiempo de espera.
-- Se prioriza el precio actual visible y se descarta el precio anterior tachado.
-- La imagen debe ser una URL `mlstatic.com` y no un logo.
-- Las páginas de verificación/CAPTCHA se rechazan.
-- Tests locales: 8/8 PASS.
-- Sintaxis de API, frontend e importador: OK.
+- Browserless `/function` ejecuta Puppeteer remoto y extrae directamente del DOM.
+- Proxy residencial Argentina + sesión sticky.
+- Título: `h1.ui-pdp-title`.
+- Precio: prioriza `#price .ui-pdp-price__second-line .andes-money-amount`; excluye precio original/tachado y conserva candidatos de diagnóstico.
+- Imagen: prioriza primera imagen principal de la galería y valida dominio `mlstatic.com`.
+- El frontend acepta respuestas parciales: si falta un campo, completa los demás.
 
-La validación live contra Mercado Libre debe completarse desde el deployment de Vercel, porque este runtime de trabajo no permite navegar hacia esas fichas reales.
+Validación local:
+- `node --check mercadolibre-importer.mjs`: PASS
+- `node --check api/product.js`: PASS
+- `node --check src/main.js`: PASS
+- `node --test mercadolibre-importer.test.mjs`: 7/7 PASS

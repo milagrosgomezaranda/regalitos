@@ -37,12 +37,7 @@ export default async function handler(req, res) {
   const cacheKey = rawUrl.trim();
   const cached = getCached(cacheKey);
   if (cached) {
-    return res.status(200).json({
-      ok: true,
-      ...cached,
-      method: `${cached.method}-cache`,
-      elapsedMs: Date.now() - startedAt,
-    });
+    return res.status(200).json({ ok: true, ...cached, method: `${cached.method}-cache`, elapsedMs: Date.now() - startedAt });
   }
 
   try {
@@ -51,22 +46,15 @@ export default async function handler(req, res) {
       title: product.title,
       price: product.price,
       image: product.image,
+      missing: product.missing || [],
       method: product.method,
       ids: product.ids,
+      debug: product.missing?.length ? product.debug : undefined,
     };
     saveCached(cacheKey, result);
-
-    return res.status(200).json({
-      ok: true,
-      ...result,
-      elapsedMs: Date.now() - startedAt,
-    });
+    return res.status(200).json({ ok: true, ...result, elapsedMs: Date.now() - startedAt });
   } catch (error) {
     const status = error?.code === 'BROWSERLESS_CONFIG' ? 500 : 502;
-    return res.status(status).json({
-      ok: false,
-      error: error?.message || 'No se pudo leer el producto.',
-      elapsedMs: Date.now() - startedAt,
-    });
+    return res.status(status).json({ ok: false, error: error?.message || 'No se pudo leer el producto.', elapsedMs: Date.now() - startedAt });
   }
 }

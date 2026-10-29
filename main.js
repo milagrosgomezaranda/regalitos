@@ -686,34 +686,41 @@ async function fetchProduct() {
     });
 
     const data = await response.json().catch(() => ({}));
-
-    if (!response.ok || !data.ok) {
-      const detail = Array.isArray(data.causes) && data.causes.length ? ` (${data.causes.join(' | ')})` : '';
-      throw new Error(`${data.error || 'No se pudo leer la ficha de Mercado Libre.'}${detail}`);
-    }
+    if (!response.ok || !data.ok) throw new Error(data.error || 'No se pudo leer la ficha de Mercado Libre.');
 
     const title = String(data.title || '').trim();
     const image = String(data.image || '').trim();
     const price = Number(data.price);
+    const loaded = [];
+    const missing = [];
 
-    if (!title || !image || !Number.isFinite(price) || price <= 0) {
-      throw new Error('Mercado Libre respondió, pero faltó título, precio o imagen.');
-    }
+    if (title) {
+      form.elements.title.value = title;
+      loaded.push('nombre');
+    } else missing.push('nombre');
 
-    form.elements.title.value = title;
-    form.elements.price.value = String(Math.round(price));
-    form.elements.image_url.value = image;
-    updatePhotoPreview();
+    if (Number.isFinite(price) && price > 0) {
+      form.elements.price.value = String(Math.round(price));
+      loaded.push('precio');
+    } else missing.push('precio');
+
+    if (image) {
+      form.elements.image_url.value = image;
+      updatePhotoPreview();
+      loaded.push('foto');
+    } else missing.push('foto');
+
+    if (!loaded.length) throw new Error('Mercado Libre abrió, pero no se pudo obtener ningún dato del producto.');
 
     const elapsed = Number(data.elapsedMs);
     const timing = Number.isFinite(elapsed) ? ` en ${(elapsed / 1000).toFixed(1)} s` : '';
-    msg.textContent = `Nombre, precio y foto cargados${timing}. Revisalos antes de guardar.`;
+    msg.textContent = missing.length
+      ? `Se cargaron ${loaded.join(', ')}${timing}. Falta ${missing.join(', ')}.`
+      : `Nombre, precio y foto cargados${timing}. Revisalos antes de guardar.`;
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      msg.textContent = 'Browserless tardó demasiado y la búsqueda fue cancelada. Probá nuevamente.';
-    } else {
-      msg.textContent = error?.message || 'No se pudieron obtener los datos del producto.';
-    }
+    msg.textContent = error?.name === 'AbortError'
+      ? 'Browserless tardó demasiado y la búsqueda fue cancelada. Probá nuevamente.'
+      : (error?.message || 'No se pudieron obtener los datos del producto.');
   } finally {
     clearTimeout(timer);
     if (button.isConnected) button.disabled = false;
