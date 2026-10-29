@@ -88,36 +88,60 @@ test('usa JSON-LD Product como fallback completo', () => {
   assert.equal(product.image, IMAGE);
 });
 
-test('Browserless usa /unblock residencial AR sin waitForSelector rígido', async () => {
+test('Browserless usa /chromium/unblock v2 con body oficial y navegador CDP remoto', async () => {
   let capturedUrl = '';
   let capturedBody = null;
+  let capturedWs = '';
   const fakeFetch = async (url, options) => {
     capturedUrl = String(url);
     capturedBody = JSON.parse(options.body);
     return {
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ content: REALISTIC_HTML }),
+      text: async () => JSON.stringify({
+        content: REALISTIC_HTML,
+        browserWSEndpoint: 'wss://browserless.test/devtools/browser/abc',
+      }),
     };
+  };
+
+  const fakePage = {
+    url: () => 'https://www.mercadolibre.com.ar/p/MLA24365049',
+    waitForTimeout: async () => {},
+    evaluate: async () => ({
+      title: 'Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm',
+      price: 110579.03,
+      image: IMAGE,
+      url: 'https://www.mercadolibre.com.ar/p/MLA24365049',
+      documentTitle: 'Taladro 20v 13mm Brushless TOTAL 2000rpm 66nm',
+    }),
+  };
+  const fakeBrowser = {
+    contexts: () => [{ pages: () => [fakePage] }],
+    close: async () => {},
   };
 
   const product = await importMercadoLibreProduct(URL_1, {
     fetchImpl: fakeFetch,
+    connectBrowser: async (ws) => { capturedWs = ws; return fakeBrowser; },
     browserlessToken: 'test-token',
     browserlessBaseUrl: 'https://browserless.test',
     timeoutMs: 10000,
   });
 
   const requestUrl = new URL(capturedUrl);
-  assert.equal(requestUrl.pathname, '/unblock');
+  assert.equal(requestUrl.pathname, '/chromium/unblock');
   assert.equal(requestUrl.searchParams.get('token'), 'test-token');
   assert.equal(requestUrl.searchParams.get('proxy'), 'residential');
   assert.equal(requestUrl.searchParams.get('proxyCountry'), 'ar');
   assert.equal(requestUrl.searchParams.get('proxySticky'), 'true');
-  assert.equal('waitForSelector' in capturedBody, false);
-  assert.equal(capturedBody.waitForTimeout, 2500);
+  assert.equal(requestUrl.searchParams.get('timeout'), '10000');
+  assert.deepEqual(Object.keys(capturedBody).sort(), ['browserWSEndpoint', 'content', 'cookies', 'screenshot', 'ttl', 'url'].sort());
+  assert.equal(capturedBody.content, true);
+  assert.equal(capturedBody.browserWSEndpoint, true);
+  assert.match(capturedWs, /token=test-token/);
   assert.equal(product.price, 110579.03);
-  assert.equal(product.method, 'browserless-unblock-residential-ar');
+  assert.equal(product.method, 'browserless-unblock+remote-dom');
 });
 
 test('devuelve resultado parcial si Browserless trae solo título e imagen', async () => {
