@@ -73,7 +73,9 @@ function getJsonLdProduct(html) {
           ? item["@type"]
           : [item["@type"]];
 
-        if (!types.includes("Product")) continue;
+        if (!types.some(type => String(type).toLowerCase() === "product")) {
+          continue;
+        }
 
         const offer = Array.isArray(item.offers)
           ? item.offers[0]
@@ -114,26 +116,74 @@ function safeImage(value, baseUrl) {
   }
 }
 
-function getMercadoLibreItemId(url) {
-  // Los enlaces compartidos pueden contener el ID en los parámetros.
-  for (const key of ["item_id", "wid"]) {
-    const value = url.searchParams.get(key);
+function isValidMLAId(value) {
+  return /^MLA\d+$/i.test(String(value || ""));
+}
 
-    if (/^MLA\d+$/i.test(value || "")) {
-      return value.toUpperCase();
+// Obtiene el ID de la publicación, que es el que necesitamos
+// para recuperar el precio y las fotos de esa oferta concreta.
+function getMercadoLibreIds(url) {
+  const itemCandidates = [];
+  const catalogCandidates = [];
+
+  function addItem(value) {
+    if (isValidMLAId(value)) {
+      const id = value.toUpperCase();
+      if (!itemCandidates.includes(id)) itemCandidates.push(id);
     }
   }
 
-  // Enlaces directos de publicaciones.
-  const directMatch = url.pathname.match(
-    /(?:^|\/)(MLA\d+)(?:[-/]|$)/i
-  );
-
-  if (directMatch) {
-    return directMatch[1].toUpperCase();
+  function addCatalog(value) {
+    if (isValidMLAId(value)) {
+      const id = value.toUpperCase();
+      if (!catalogCandidates.includes(id)) {
+        catalogCandidates.push(id);
+      }
+    }
   }
 
-  return null;
+  // Enlaces del tipo ?pdp_filters=item_id:MLA123456789
+  const pdpFilters = url.searchParams.get("pdp_filters") || "";
+
+  const itemFromFilter = pdpFilters.match(
+    /(?:^|[,:;])\s*item_id\s*:\s*(MLA\d+)/i
+  );
+
+  if (itemFromFilter) addItem(itemFromFilter[1]);
+
+  // Parámetros normales de la URL.
+  addItem(url.searchParams.get("item_id"));
+  addItem(url.searchParams.get("wid"));
+
+  // Mercado Libre suele poner wid dentro del fragmento (#...).
+  // Los fragmentos no se envían al servidor, así que hay que leerlos
+  // explícitamente desde la URL recibida.
+  const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+
+  addItem(fragment.get("wid"));
+  addItem(fragment.get("item_id"));
+
+  // URL de publicación directa, por ejemplo:
+  // /MLA123456789-producto...
+  const directPath = url.pathname.match(
+    /\/(MLA\d+)(?:-|\/|$)/i
+  );
+
+  // En una ruta /p/MLA... el código es del catálogo, no de la publicación.
+  const catalogPath = url.pathname.match(
+    /\/p\/(MLA\d+)(?:\/|$)/i
+  );
+
+  if (catalogPath) {
+    addCatalog(catalogPath[1]);
+  } else if (directPath) {
+    addItem(directPath[1]);
+  }
+
+  return {
+    itemIds: itemCandidates,
+    catalogIds: catalogCandidates
+  };
 }
 
 function isMercadoLibreHost(host) {
@@ -142,42 +192,6 @@ function isMercadoLibreHost(host) {
     /(^|\.)mercadolibre\.com$/i.test(host) ||
     /(^|\.)mercadolibre\.[a-z.]+$/i.test(host)
   );
-}
-
-async function getMercadoLibreProduct(url) {
-  const itemId = getMercadoLibreItemId(url);
-
-  if (!itemId) return null;
-
-  const response = await fetch(
-    `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`,
-    {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(7000)
-    }
-  );
-
-  if (!response.ok) return null;
-
-  const item = await response.json();
-
-  const title = clean(item.title);
-  const image = safeImage(
-    item.secure_thumbnail ||
-      item.thumbnail ||
-      item.pictures?.[0]?.secure_url ||
-      item.pictures?.[0]?.url,
-    url.toString()
-  );
-
-  const price =
-    typeof item.price === "number" && Number.isFinite(item.price)
-      ? item.price
-      : null;
-
-  if (!title && !image && price === null) return null;
-
-  return { title, image, price };
 }
 
 function parsePrice(value) {
@@ -193,8 +207,6 @@ function parsePrice(value) {
 
   if (!cleaned) return null;
 
-  // Interpretar formatos habituales:
-  // 1234.56, 1.234,56 y 1234,56.
   let normalized = cleaned;
 
   if (cleaned.includes(",") && cleaned.includes(".")) {
@@ -209,6 +221,97 @@ function parsePrice(value) {
   const number = Number(normalized);
 
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizeItem(item, baseUrl) {
+  if (!item || typeof item !== "object") return null;
+
+  const title = clean(item.title || item.name);
+
+  const image = safeImage(
+    item.secure_thumbnail ||
+      item.thumbnail ||
+      item.pictures?.[0]?.secure_url ||
+      item.pictures?.[0]?.url ||
+      item.pictures?.[0],
+    baseUrl
+  );
+
+  const price = parsePrice(item.price);
+
+  if (!title && !image && price === null) return null;
+
+  return { title, image, price };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json"
+    },
+    signal: AbortSignal.timeout(7000)
+  });
+
+  if (!response.ok) return null;
+
+  return response.json();
+}
+
+async function getMercadoLibreProduct(url) {
+  const { itemIds, catalogIds } = getMercadoLibreIds(url);
+
+  // Primero probamos la publicación específica.
+  // Así el precio corresponde a esa oferta y no a otra del catálogo.
+  for (const itemId of itemIds) {
+    try {
+      const item = await fetchJson(
+        `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`
+      );
+
+      const product = normalizeItem(item, url.toString());
+
+      if (product) return product;
+    } catch {
+      // Intentar el siguiente identificador o método.
+    }
+  }
+
+  // Si no pudimos obtener la publicación, intentamos el catálogo.
+  // Puede aportar nombre e imagen, pero no necesariamente el precio
+  // actual de la oferta elegida.
+  for (const catalogId of catalogIds) {
+    try {
+      const catalog = await fetchJson(
+        `https://api.mercadolibre.com/products/${encodeURIComponent(catalogId)}`
+      );
+
+      if (!catalog) continue;
+
+      const title = clean(catalog.name || catalog.title);
+
+      const image = safeImage(
+        catalog.pictures?.[0]?.url ||
+          catalog.pictures?.[0]?.secure_url ||
+          catalog.main_picture?.url ||
+          catalog.thumbnail,
+        url.toString()
+      );
+
+      if (title || image) {
+        return {
+          title,
+          image,
+          // No inventar el precio: el del catálogo no garantiza
+          // que coincida con el de la publicación elegida.
+          price: null
+        };
+      }
+    } catch {
+      // Continuar con la lectura de la página.
+    }
+  }
+
+  return null;
 }
 
 function validatePublicUrl(url) {
@@ -238,7 +341,10 @@ function validatePublicUrl(url) {
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET");
-  res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
+  res.setHeader(
+    "Cache-Control",
+    "s-maxage=300, stale-while-revalidate=600"
+  );
 
   if (req.method !== "GET") {
     return res.status(405).json({
@@ -273,7 +379,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Primero, usar la API pública para artículos de Mercado Libre.
     if (isMercadoLibreHost(url.hostname)) {
       try {
         const product = await getMercadoLibreProduct(url);
@@ -282,15 +387,13 @@ export default async function handler(req, res) {
           return res.status(200).json(product);
         }
       } catch {
-        // Si falla la API, intentar leer los metadatos de la página.
+        // Intentar obtener los datos desde el HTML de la página.
       }
     }
 
-    // Fallback genérico para tiendas que permitan consultar su HTML.
     const response = await fetch(url.toString(), {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; Regalitos/1.0)",
+        "User-Agent": "Mozilla/5.0 (compatible; Regalitos/1.0)",
         Accept: "text/html,application/xhtml+xml"
       },
       redirect: "follow",
@@ -349,7 +452,7 @@ export default async function handler(req, res) {
   } catch {
     return res.status(422).json({
       error:
-        "No se pudo acceder a esa tienda. Probá con otra URL o cargá los datos manualmente."
+        "No se pudieron obtener los datos automáticamente. Probá de nuevo o cargalos manualmente."
     });
   }
 }
