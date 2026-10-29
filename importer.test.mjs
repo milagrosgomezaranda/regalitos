@@ -6,7 +6,7 @@ import {
   extractProductFromHtml,
   isValidProductImage,
   looksBlocked,
-} from '../mercadolibre-importer.mjs';
+} from './mercadolibre-importer.mjs';
 
 const irimo = 'https://www.mercadolibre.com.ar/p/MLA24365049?matt_tool=89488245&pdp_filters=item_id:MLA1598228317&ua=5PF0k8YicT0vdd8UstmNrSMZpIf3q2zzhbnr9O9SvE9PmF8#origin=share&sid=share&wid=MLA1598228317&action=copy';
 const adidas = 'https://www.mercadolibre.com.ar/zapatillas-de-senderismo-terrex-skychaser-ax5-jq2226-adidas/up/MLAU3674909961?product_trigger_id=MLA56797757&attributes=COLOR%3AGris%2CSIZE%3AMLAU3674909961&pdp_filters=item_id%3AMLA2675701986&applied_product_filters=MLAU3683124066&picker=true&quantity=1';

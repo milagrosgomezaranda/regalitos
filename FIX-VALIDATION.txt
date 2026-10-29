@@ -1,0 +1,20 @@
+Regalitos - validación del fix
+
+Cambios aplicados:
+- package.json: restaura Vite + @supabase/supabase-js y build real a dist.
+- vercel.json: framework Vite, build npm run build, output dist; se elimina rewrite global.
+- api/product.js: integra mercadolibre-importer.mjs y mantiene GET /api/product?url=...
+- importer.test.mjs: corrige ruta del módulo.
+
+Validaciones ejecutadas en este entorno:
+- node --check src/main.js: OK
+- node --check api/product.js: OK
+- node --check mercadolibre-importer.mjs: OK
+- npm test: 6/6 PASS
+- integración handler /api/product con fetch controlado: PASS
+- live-check real: ejecutado; falla por bloqueo de salida HTTPS del runtime (fetch failed)
+- npm run build local: no ejecutable porque npm install no puede descargar dependencias en este runtime.
+
+IDs verificados por parsing real de las URLs:
+- Irimo item MLA1598228317 / catálogo MLA24365049
+- Adidas item MLA2675701986 / catálogo MLAU3674909961

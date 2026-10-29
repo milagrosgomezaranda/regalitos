@@ -1,10 +1,19 @@
 {
-  "name": "regalitos-mercadolibre-importer-fix",
+  "name": "regalitos",
   "private": true,
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node --test",
-    "build": "node --check mercadolibre-importer.mjs && node --check vercel-handler.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test importer.test.mjs",
     "live": "node live-check.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
   }
 }
