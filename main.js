@@ -673,10 +673,10 @@ async function fetchProduct() {
   }
 
   button.disabled = true;
-  msg.textContent = 'Leyendo la ficha de Mercado Libre…';
+  msg.textContent = 'Buscando nombre, precio y foto…';
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 22000);
+  const timer = setTimeout(() => controller.abort(), 15000);
 
   try {
     const response = await fetch(`/api/product?url=${encodeURIComponent(url)}`, {
@@ -688,8 +688,8 @@ async function fetchProduct() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok || !data.ok) {
-      const stage = data.stage ? ` [${data.stage}]` : '';
-      throw new Error(`${data.error || 'No se pudo leer la ficha de Mercado Libre.'}${stage}`);
+      const detail = Array.isArray(data.causes) && data.causes.length ? ` (${data.causes.join(' | ')})` : '';
+      throw new Error(`${data.error || 'No se pudo leer la ficha de Mercado Libre.'}${detail}`);
     }
 
     const title = String(data.title || '').trim();
@@ -710,7 +710,7 @@ async function fetchProduct() {
     msg.textContent = `Nombre, precio y foto cargados${timing}. Revisalos antes de guardar.`;
   } catch (error) {
     if (error?.name === 'AbortError') {
-      msg.textContent = 'La ficha tardó más de 22 segundos. La consulta fue cancelada para no dejar la pantalla esperando.';
+      msg.textContent = 'La búsqueda tardó demasiado y fue cancelada. Podés completar los datos manualmente.';
     } else {
       msg.textContent = error?.message || 'No se pudieron obtener los datos del producto.';
     }

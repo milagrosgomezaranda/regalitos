@@ -2,18 +2,6 @@ const ML_HOST_RE = /(^|\.)mercadolibre\.com\.ar$/i;
 const ITEM_RE = /\bMLA\d{7,}\b/i;
 const PRODUCT_RE = /\bMLAU?\d{7,}\b/i;
 
-const GENERIC_TITLES = [
-  'mercado libre',
-  'mercadolibre',
-  'verificación',
-  'verificacion',
-  'account verification',
-  'access denied',
-  'iniciá sesión',
-  'inicia sesión',
-  'captcha',
-];
-
 const BLOCK_MARKERS = [
   '/gz/account-verification',
   'account-verification',
@@ -25,6 +13,16 @@ const BLOCK_MARKERS = [
   'access denied',
   'request blocked',
   'robot check',
+];
+
+const GENERIC_TITLES = [
+  'mercado libre',
+  'mercadolibre',
+  'verificación',
+  'verificacion',
+  'account verification',
+  'access denied',
+  'captcha',
 ];
 
 function decodeRepeated(value) {
@@ -42,15 +40,14 @@ function decodeRepeated(value) {
 }
 
 function firstMatch(value, regex) {
-  const m = decodeRepeated(value).match(regex);
-  return m ? m[0].toUpperCase() : null;
+  const match = decodeRepeated(value).match(regex);
+  return match ? match[0].toUpperCase() : null;
 }
 
 function itemFromFilter(value) {
   const decoded = decodeRepeated(value);
-  const m = decoded.match(/(?:^|[,&;|\s])item_id\s*[:=]\s*(MLA\d{7,})\b/i)
-    || decoded.match(/\bitem_id\s*[:=]\s*(MLA\d{7,})\b/i);
-  return m ? m[1].toUpperCase() : null;
+  const match = decoded.match(/\bitem_id\s*[:=]\s*(MLA\d{7,})\b/i);
+  return match ? match[1].toUpperCase() : null;
 }
 
 function paramsFromFragment(hash) {
@@ -61,23 +58,22 @@ function paramsFromFragment(hash) {
 
 export function extractMercadoLibreIds(input) {
   const url = new URL(input);
-  if (!ML_HOST_RE.test(url.hostname) && !/(^|\.)mercadolibre\.com$/i.test(url.hostname)) {
+  if (!ML_HOST_RE.test(url.hostname)) {
     throw new Error('La URL no pertenece a Mercado Libre Argentina.');
   }
 
-  const fragment = paramsFromFragment(url.hash);
   const query = url.searchParams;
+  const fragment = paramsFromFragment(url.hash);
   const path = decodeRepeated(url.pathname);
 
   const itemCandidates = [
     itemFromFilter(query.get('pdp_filters')),
     firstMatch(query.get('item_id'), ITEM_RE),
-    firstMatch(fragment.get('wid'), ITEM_RE),
     firstMatch(query.get('wid'), ITEM_RE),
+    firstMatch(fragment.get('wid'), ITEM_RE),
+    itemFromFilter(fragment.get('pdp_filters')),
   ].filter(Boolean);
 
-  // Sólo tratamos como publicación el MLA de una URL articulo/MLA-...;
-  // un /p/MLA... es un producto de catálogo, no un item.
   const articuloMatch = path.match(/\/MLA-?(\d{7,})(?:-|\/|$)/i);
   if (/articulo\./i.test(url.hostname) && articuloMatch) {
     itemCandidates.push(`MLA${articuloMatch[1]}`);
@@ -89,13 +85,12 @@ export function extractMercadoLibreIds(input) {
   const upMatch = path.match(/\/up\/(MLAU\d{7,})(?:\/|$)/i);
   if (upMatch) catalogCandidates.push(upMatch[1].toUpperCase());
 
-  // IDs auxiliares de catálogo/User Product. No deben pisar el item_id real.
   for (const key of ['applied_product_filters', 'product_trigger_id']) {
     const value = firstMatch(query.get(key), PRODUCT_RE);
     if (value) catalogCandidates.push(value);
   }
-  const attributesProduct = firstMatch(query.get('attributes'), /\bMLAU\d{7,}\b/i);
-  if (attributesProduct) catalogCandidates.push(attributesProduct);
+  const attributeProduct = firstMatch(query.get('attributes'), /\bMLAU\d{7,}\b/i);
+  if (attributeProduct) catalogCandidates.push(attributeProduct);
 
   return {
     itemId: [...new Set(itemCandidates)][0] || null,
@@ -109,8 +104,6 @@ export function normalizeMercadoLibreUrl(input) {
   const url = new URL(input);
   const ids = extractMercadoLibreIds(input);
 
-  // El fragmento no llega al servidor. Si el único item_id estaba en #wid,
-  // lo trasladamos a pdp_filters para preservar la publicación seleccionada.
   if (ids.itemId && !itemFromFilter(url.searchParams.get('pdp_filters'))) {
     url.searchParams.set('pdp_filters', `item_id:${ids.itemId}`);
   }
@@ -140,65 +133,12 @@ function stripTags(value = '') {
 
 function parseTagAttributes(tag) {
   const attrs = {};
-  const re = /([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
-  let m;
-  while ((m = re.exec(tag))) attrs[m[1].toLowerCase()] = decodeHtml(m[2] ?? m[3] ?? m[4] ?? '');
+  const regex = /([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  let match;
+  while ((match = regex.exec(tag))) {
+    attrs[match[1].toLowerCase()] = decodeHtml(match[2] ?? match[3] ?? match[4] ?? '');
+  }
   return attrs;
-}
-
-function getMetaMap(html) {
-  const map = new Map();
-  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
-    const attrs = parseTagAttributes(match[0]);
-    const key = (attrs.property || attrs.name || attrs.itemprop || '').toLowerCase();
-    if (key && attrs.content && !map.has(key)) map.set(key, attrs.content);
-  }
-  return map;
-}
-
-function parseJsonLd(html) {
-  const values = [];
-  for (const match of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
-    const raw = decodeHtml(match[1]).trim();
-    if (!raw) continue;
-    try { values.push(JSON.parse(raw)); } catch { /* malformed block */ }
-  }
-  return values;
-}
-
-function walk(value, visitor) {
-  if (Array.isArray(value)) {
-    for (const v of value) walk(v, visitor);
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  visitor(value);
-  for (const v of Object.values(value)) walk(v, visitor);
-}
-
-function isProductNode(node) {
-  const type = node?.['@type'];
-  return (Array.isArray(type) ? type : [type]).some((v) => String(v).toLowerCase() === 'product');
-}
-
-function normalizeImageCandidate(value) {
-  if (Array.isArray(value)) return value.map(normalizeImageCandidate).find(Boolean) || null;
-  if (value && typeof value === 'object') return normalizeImageCandidate(value.url || value.contentUrl || value.src);
-  if (!value) return null;
-  const s = decodeHtml(String(value)).replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
-  try { return new URL(s).toString(); } catch { return null; }
-}
-
-export function isValidProductImage(value) {
-  const normalized = normalizeImageCandidate(value);
-  if (!normalized) return false;
-  let url;
-  try { url = new URL(normalized); } catch { return false; }
-  const host = url.hostname.toLowerCase();
-  const path = `${url.pathname}${url.search}`.toLowerCase();
-  if (!host.endsWith('mlstatic.com')) return false;
-  if (/logo|favicon|navigation|brandmark|mercado[-_]?libre/.test(path)) return false;
-  return true;
 }
 
 function normalizeTitle(value) {
@@ -209,156 +149,50 @@ function normalizeTitle(value) {
     .trim();
   if (title.length < 4) return null;
   const lower = title.toLowerCase();
-  if (GENERIC_TITLES.some((x) => lower === x || lower.startsWith(`${x} `))) return null;
+  if (GENERIC_TITLES.some((generic) => lower === generic || lower.startsWith(`${generic} `))) return null;
   return title;
 }
 
 function normalizePrice(value) {
   if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
   if (!value) return null;
-  let s = stripTags(String(value)).replace(/[^\d.,-]/g, '');
-  if (!s) return null;
 
-  // Formato AR: 189.999 o 12.345,67. Si sólo hay punto y 3 dígitos finales,
-  // es separador de miles; si hay coma, la coma es decimal.
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
-  else if (/^\d{1,3}(?:\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
-  const n = Number(s);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  let text = stripTags(String(value)).replace(/[^\d.,-]/g, '');
+  if (!text) return null;
+
+  if (text.includes(',')) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(text)) {
+    text = text.replace(/\./g, '');
+  }
+
+  const price = Number(text);
+  return Number.isFinite(price) && price > 0 ? price : null;
 }
 
-function fromPublicItemApiPayload(payload, expectedItemId = null) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('La API publica de Mercado Libre devolvio una respuesta invalida.');
-  }
-
-  const id = String(payload.id || '').toUpperCase();
-  if (expectedItemId && id && id !== expectedItemId.toUpperCase()) {
-    throw new Error(`La API devolvio un item distinto (${id}).`);
-  }
-
-  const title = normalizeTitle(payload.title);
-  const price = normalizePrice(
-    payload.price
-    ?? payload.sale_price?.amount
-    ?? payload.sale_price
-    ?? payload.base_price
-  );
-
-  const imageCandidates = [
-    ...(Array.isArray(payload.pictures)
-      ? payload.pictures.flatMap((picture) => [picture?.secure_url, picture?.url])
-      : []),
-    payload.secure_thumbnail,
-    payload.thumbnail,
-  ]
-    .map(normalizeImageCandidate)
-    .filter(Boolean);
-
-  const image = imageCandidates.find(isValidProductImage) || null;
-
-  if (!title || !price || !image) {
-    const missing = [!title && 'title', !price && 'price', !image && 'image']
-      .filter(Boolean)
-      .join(', ');
-    throw new Error(`La API publica devolvio datos incompletos; faltan: ${missing}.`);
-  }
-
-  return { title, price, image, method: 'public-item-api' };
-}
-
-function offerPrice(offers) {
-  if (Array.isArray(offers)) {
-    for (const offer of offers) {
-      const p = offerPrice(offer);
-      if (p) return p;
-    }
+function normalizeImageCandidate(value) {
+  if (!value) return null;
+  const raw = String(value)
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&')
+    .trim();
+  try {
+    return new URL(raw).toString();
+  } catch {
     return null;
   }
-  if (!offers || typeof offers !== 'object') return null;
-  return normalizePrice(offers.price ?? offers.lowPrice ?? offers.highPrice);
 }
 
-function fromJsonLd(html) {
-  let result = {};
-  for (const doc of parseJsonLd(html)) {
-    walk(doc, (node) => {
-      if (!isProductNode(node)) return;
-      result = {
-        title: result.title || normalizeTitle(node.name || node.headline),
-        price: result.price || offerPrice(node.offers),
-        image: result.image || normalizeImageCandidate(node.image),
-      };
-    });
-  }
-  return result;
-}
-
-function firstClassText(html, classFragment) {
-  const re = new RegExp(`<[^>]+class=["'][^"']*${classFragment}[^"']*["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`, 'i');
-  const m = html.match(re);
-  return m ? stripTags(m[1]) : null;
-}
-
-function firstImageByClass(html, classFragment) {
-  const re = new RegExp(`<img\\b[^>]*class=["'][^"']*${classFragment}[^"']*["'][^>]*>`, 'i');
-  const m = html.match(re);
-  if (!m) return null;
-  const attrs = parseTagAttributes(m[0]);
-  return normalizeImageCandidate(attrs.src || attrs['data-src'] || attrs.srcset?.split(/\s+/)[0]);
-}
-
-function sliceFromClass(html, classFragment, maxLength = 8000) {
-  const re = new RegExp(`class=["'][^"']*${classFragment}[^"']*["']`, 'i');
-  const match = re.exec(html);
-  if (!match) return '';
-  return html.slice(match.index, match.index + maxLength);
-}
-
-function firstImageInHtml(fragment) {
-  for (const match of String(fragment || '').matchAll(/<img\b[^>]*>/gi)) {
-    const attrs = parseTagAttributes(match[0]);
-    const candidates = [
-      attrs['data-zoom'],
-      attrs['data-src'],
-      attrs.src,
-      attrs.srcset?.split(/\s+/)[0],
-    ];
-    for (const candidate of candidates) {
-      const image = normalizeImageCandidate(candidate);
-      if (isValidProductImage(image)) return image;
-    }
-  }
-  return null;
-}
-
-function extractVisiblePdp(html) {
-  // Estos son los datos que ve el usuario en la PDP de Mercado Libre.
-  const title = normalizeTitle(firstClassText(html, 'ui-pdp-title'));
-
-  // Priorizamos la segunda línea/importe actual y no el precio anterior tachado.
-  const currentPriceSection = sliceFromClass(html, 'ui-pdp-price__second-line', 6000)
-    || sliceFromClass(html, 'ui-pdp-price__main-container', 8000);
-  const price = normalizePrice(firstClassText(currentPriceSection, 'andes-money-amount__fraction'));
-
-  // Priorizamos la imagen principal de la galería.
-  const gallerySection = sliceFromClass(html, 'ui-pdp-gallery__figure', 12000);
-  const image = firstImageInHtml(gallerySection)
-    || firstImageByClass(html, 'ui-pdp-image');
-
-  return { title, price, image };
-}
-
-function embeddedJsonFallback(html) {
-  const decoded = html.replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
-  const titleMatch = decoded.match(/"(?:title|name)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i);
-  const priceMatch = decoded.match(/"(?:price|current_price|amount)"\s*:\s*(?:"([\d.,]+)"|([\d.]+))/i);
-  const imageMatches = [...decoded.matchAll(/https?:\/\/[^"'\s<>\\]+mlstatic\.com\/[^"'\s<>\\]+/gi)];
-  return {
-    title: normalizeTitle(titleMatch?.[1]?.replace(/\\"/g, '"')),
-    price: normalizePrice(priceMatch?.[1] ?? priceMatch?.[2]),
-    image: imageMatches.map((m) => normalizeImageCandidate(m[0])).find(isValidProductImage) || null,
-  };
+export function isValidProductImage(value) {
+  const normalized = normalizeImageCandidate(value);
+  if (!normalized) return false;
+  const url = new URL(normalized);
+  const host = url.hostname.toLowerCase();
+  const path = `${url.pathname}${url.search}`.toLowerCase();
+  if (!host.endsWith('mlstatic.com')) return false;
+  if (/logo|favicon|navigation|brandmark|mercado[-_]?libre/.test(path)) return false;
+  return true;
 }
 
 export function looksBlocked(text, finalUrl = '') {
@@ -366,182 +200,278 @@ export function looksBlocked(text, finalUrl = '') {
   return BLOCK_MARKERS.some((marker) => sample.includes(marker));
 }
 
+function firstClassText(html, classFragment) {
+  const regex = new RegExp(`<[^>]+class=["'][^"']*${classFragment}[^"']*["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`, 'i');
+  const match = String(html).match(regex);
+  return match ? stripTags(match[1]) : null;
+}
+
+function sliceFromClass(html, classFragment, maxLength = 10000) {
+  const regex = new RegExp(`class=["'][^"']*${classFragment}[^"']*["']`, 'i');
+  const match = regex.exec(String(html));
+  if (!match) return '';
+  return String(html).slice(match.index, match.index + maxLength);
+}
+
+function firstValidImageInHtml(fragment) {
+  for (const match of String(fragment || '').matchAll(/<img\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(match[0]);
+    const srcset = String(attrs.srcset || '')
+      .split(',')
+      .map((entry) => entry.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    const candidates = [attrs['data-zoom'], attrs['data-src'], attrs.src, ...srcset];
+    for (const candidate of candidates) {
+      const normalized = normalizeImageCandidate(candidate);
+      if (isValidProductImage(normalized)) return normalized;
+    }
+  }
+  return null;
+}
+
+function getMetaMap(html) {
+  const map = new Map();
+  for (const match of String(html).matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = parseTagAttributes(match[0]);
+    const key = (attrs.property || attrs.name || attrs.itemprop || '').toLowerCase();
+    if (key && attrs.content && !map.has(key)) map.set(key, attrs.content);
+  }
+  return map;
+}
+
+function parseJsonLd(html) {
+  const values = [];
+  for (const match of String(html).matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    const raw = decodeHtml(match[1]).trim();
+    if (!raw) continue;
+    try {
+      values.push(JSON.parse(raw));
+    } catch {
+      // malformed block: ignore it and continue with other sources
+    }
+  }
+  return values;
+}
+
+function walk(value, visitor) {
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, visitor);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  visitor(value);
+  for (const nested of Object.values(value)) walk(nested, visitor);
+}
+
+function extractJsonLdProduct(html) {
+  const result = { title: null, price: null, image: null };
+  for (const doc of parseJsonLd(html)) {
+    walk(doc, (node) => {
+      const types = Array.isArray(node?.['@type']) ? node['@type'] : [node?.['@type']];
+      if (!types.some((type) => String(type).toLowerCase() === 'product')) return;
+      result.title ||= normalizeTitle(node.name || node.headline);
+
+      const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+      result.price ||= normalizePrice(offers?.price ?? offers?.lowPrice ?? offers?.highPrice);
+
+      const imageValue = Array.isArray(node.image) ? node.image[0] : node.image;
+      const image = normalizeImageCandidate(imageValue?.url || imageValue?.contentUrl || imageValue);
+      if (!result.image && isValidProductImage(image)) result.image = image;
+    });
+  }
+  return result;
+}
+
 export function extractProductFromHtml(html, finalUrl = '') {
-  if (!html || looksBlocked(html, finalUrl)) throw new Error('Mercado Libre devolvió una página de verificación/bloqueo.');
+  if (!html || looksBlocked(html, finalUrl)) {
+    throw new Error('Mercado Libre devolvió una página de verificación o bloqueo.');
+  }
+
   const meta = getMetaMap(html);
-  const visible = extractVisiblePdp(html);
-  const json = fromJsonLd(html);
-  const embedded = embeddedJsonFallback(html);
+  const jsonLd = extractJsonLdProduct(html);
 
-  // La PDP visible manda. Los metadatos se usan sólo como respaldo.
-  const title = visible.title
-    || json.title
+  const title = normalizeTitle(firstClassText(html, 'ui-pdp-title'))
+    || jsonLd.title
     || normalizeTitle(meta.get('og:title'))
-    || normalizeTitle(meta.get('twitter:title'))
-    || embedded.title;
+    || normalizeTitle(meta.get('twitter:title'));
 
-  const price = visible.price
-    || json.price
+  const priceSection = sliceFromClass(html, 'ui-pdp-price__second-line', 8000)
+    || sliceFromClass(html, 'ui-pdp-price__main-container', 10000)
+    || sliceFromClass(html, 'id="price"', 10000);
+  const fraction = firstClassText(priceSection, 'andes-money-amount__fraction');
+  const cents = firstClassText(priceSection, 'andes-money-amount__cents');
+  const visiblePrice = fraction
+    ? normalizePrice(cents ? `${fraction},${cents}` : fraction)
+    : null;
+  const price = visiblePrice
+    || jsonLd.price
     || normalizePrice(meta.get('product:price:amount'))
     || normalizePrice(meta.get('og:price:amount'))
-    || normalizePrice(meta.get('price'))
-    || embedded.price;
+    || normalizePrice(meta.get('price'));
 
-  const imageCandidates = [
-    visible.image,
-    json.image,
-    meta.get('og:image'),
-    meta.get('twitter:image'),
-    meta.get('image'),
-    embedded.image,
-  ].map(normalizeImageCandidate);
-  const image = imageCandidates.find(isValidProductImage) || null;
+  const gallery = sliceFromClass(html, 'ui-pdp-gallery__figure', 16000);
+  const image = firstValidImageInHtml(gallery)
+    || firstValidImageInHtml(sliceFromClass(html, 'ui-pdp-image', 12000))
+    || [meta.get('og:image'), meta.get('twitter:image'), meta.get('image')]
+      .map(normalizeImageCandidate)
+      .find(isValidProductImage)
+    || jsonLd.image;
 
   if (!title || !price || !image) {
     const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean).join(', ');
-    throw new Error(`Respuesta incompleta o no confiable; faltan: ${missing}.`);
+    throw new Error(`Respuesta HTML incompleta; faltan: ${missing}.`);
   }
+
   return { title, price, image };
 }
 
 export function extractProductFromMarkdown(markdown, finalUrl = '') {
   if (!markdown || looksBlocked(markdown, finalUrl)) {
-    throw new Error('El lector devolvió una página de verificación/bloqueo.');
+    throw new Error('El lector devolvió una página de verificación o bloqueo.');
   }
 
   const source = String(markdown);
-  const lines = source.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
-  const titleHeader = lines
-    .map((line) => line.match(/^Title:\s*(.+)$/i)?.[1])
-    .map(normalizeTitle)
-    .find(Boolean) || null;
+  const titleLine = lines.find((line) => /^Title:\s*.+/i.test(line));
+  const heading = lines.find((line) => /^#{1,3}\s+/.test(line));
+  const title = normalizeTitle(titleLine?.replace(/^Title:\s*/i, ''))
+    || normalizeTitle(heading?.replace(/^#{1,3}\s+/, ''));
 
-  const headingTitles = lines
-    .filter((line) => /^#{1,3}\s+/.test(line))
-    .map((line) => normalizeTitle(line.replace(/^#{1,3}\s+/, '')))
-    .filter(Boolean);
-
-  const title = titleHeader || headingTitles[0] || null;
-
-  // Elegimos el primer precio actual y descartamos precio anterior/cuotas/promos.
   let price = null;
   for (const line of lines) {
     const lower = line.toLowerCase();
     if (line.includes('~~')) continue;
-    if (/cuotas?|mercado cr[eé]dito|precio anterior|antes\s*\$|sin impuestos/.test(lower)) continue;
-    const matches = [...line.matchAll(/\$\s*([\d.]+(?:,\d{1,2})?)/g)];
-    for (const match of matches) {
-      const candidate = normalizePrice(match[1]);
-      if (candidate) { price = candidate; break; }
+    if (/cuotas?|mercado cr[eé]dito|precio anterior|antes\s*\$|sin impuestos|off\b/.test(lower)) continue;
+
+    const match = line.match(/\$\s*([\d.]+(?:,\d{1,2})?)/);
+    const candidate = normalizePrice(match?.[1]);
+    if (candidate) {
+      price = candidate;
+      break;
     }
-    if (price) break;
   }
 
-  // Reader puede devolver imágenes como markdown o como URLs sueltas/resumen.
   const imageCandidates = [
-    ...[...source.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]),
-    ...[...source.matchAll(/https?:\/\/[^"'\s<>\])]+mlstatic\.com\/[^"'\s<>\])]+/gi)].map((m) => m[0]),
+    ...[...source.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((match) => match[1]),
+    ...[...source.matchAll(/https?:\/\/[^"'\s<>\])]+mlstatic\.com\/[^"'\s<>\])]+/gi)].map((match) => match[0]),
   ];
   const image = imageCandidates
-    .map((value) => normalizeImageCandidate(value))
+    .map(normalizeImageCandidate)
     .find(isValidProductImage) || null;
 
   if (!title || !price || !image) {
     const missing = [!title && 'title', !price && 'price', !image && 'image'].filter(Boolean).join(', ');
-    throw new Error(`Respuesta renderizada incompleta o no confiable; faltan: ${missing}.`);
+    throw new Error(`Respuesta renderizada incompleta; faltan: ${missing}.`);
   }
+
   return { title, price, image };
 }
 
-async function fetchText(fetchImpl, url, options = {}) {
+async function fetchText(fetchImpl, url, { timeoutMs = 8000, headers = {} } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 12000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(url, {
+    const response = await fetchImpl(url, {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/156 Safari/537.36',
-        'accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
         'accept-language': 'es-AR,es;q=0.9,en;q=0.7',
-        ...(options.headers || {}),
+        ...headers,
       },
     });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return { text, finalUrl: res.url || url, contentType: res.headers?.get?.('content-type') || '' };
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return { text, finalUrl: response.url || url };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function attemptJina(fetchImpl, target, timeoutMs) {
+  const readerUrl = `https://r.jina.ai/${target}`;
+  const result = await fetchText(fetchImpl, readerUrl, {
+    timeoutMs,
+    headers: {
+      accept: 'text/plain,*/*',
+      'x-engine': 'browser',
+      'x-respond-with': 'html',
+      'x-wait-for-selector': '.ui-pdp-title',
+      'x-respond-timing': 'visible-content',
+      'x-cache-tolerance': '0',
+    },
+  });
+  return { ...extractProductFromHtml(result.text, target), method: 'jina-reader' };
+}
+
+async function attemptCorsRead(fetchImpl, target, timeoutMs) {
+  const readUrl = `https://cors.tools/read?url=${encodeURIComponent(target)}&format=markdown&render=true`;
+  const result = await fetchText(fetchImpl, readUrl, {
+    timeoutMs,
+    headers: { accept: 'text/plain,*/*' },
+  });
+  return { ...extractProductFromMarkdown(result.text, target), method: 'cors-read' };
+}
+
+async function attemptDirect(fetchImpl, target, timeoutMs) {
+  const result = await fetchText(fetchImpl, target, {
+    timeoutMs,
+    headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
+  });
+  return { ...extractProductFromHtml(result.text, result.finalUrl), method: 'direct-html' };
+}
+
+async function attemptCorsProxy(fetchImpl, target, timeoutMs) {
+  const proxyUrl = `https://cors.tools/proxy?url=${encodeURIComponent(target)}`;
+  const result = await fetchText(fetchImpl, proxyUrl, {
+    timeoutMs,
+    headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
+  });
+  return { ...extractProductFromHtml(result.text, target), method: 'cors-proxy' };
+}
+
+function wrapAttempt(name, promise, errors) {
+  return promise.catch((error) => {
+    errors.push(`${name}: ${error?.message || String(error)}`);
+    throw error;
+  });
 }
 
 export async function importMercadoLibreProduct(input, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch no está disponible en este runtime.');
 
-  extractMercadoLibreIds(input); // valida host/URL y mantiene compatibilidad con la API.
+  const ids = extractMercadoLibreIds(input);
   const normalized = normalizeMercadoLibreUrl(input);
-  const targets = [...new Set([normalized, input])];
   const errors = [];
+  const primaryTimeoutMs = options.primaryTimeoutMs ?? 8500;
+  const fallbackTimeoutMs = options.fallbackTimeoutMs ?? 4500;
 
-  // Intento 1: Jina Reader. Renderiza la PDP con navegador y devuelve el contenido
-  // visible. Funciona sin API key con un límite gratuito inferior (20 RPM).
-  for (const target of targets) {
-    try {
-      const readerUrl = `https://r.jina.ai/${target}`;
-      const r = await fetchText(fetchImpl, readerUrl, {
-        timeoutMs: options.timeoutMs ?? 26000,
-        headers: {
-          accept: 'text/plain,*/*',
-          'x-engine': 'browser',
-          'x-timeout': '18',
-          'x-wait-for-selector': '.ui-pdp-title',
-          'x-with-images-summary': 'true',
-          'x-cache-tolerance': '0',
-        },
-      });
-      return { ...extractProductFromMarkdown(r.text, r.finalUrl), method: 'jina-reader' };
-    } catch (error) {
-      errors.push(`jina-reader:${error.message}`);
-    }
+  // Los dos lectores renderizados se prueban al mismo tiempo. El primero que
+  // consiga title + price + image válidos gana, evitando esperas acumuladas.
+  try {
+    const result = await Promise.any([
+      wrapAttempt('jina-reader', attemptJina(fetchImpl, normalized, primaryTimeoutMs), errors),
+      wrapAttempt('cors-read', attemptCorsRead(fetchImpl, normalized, primaryTimeoutMs), errors),
+      wrapAttempt('direct-html', attemptDirect(fetchImpl, normalized, fallbackTimeoutMs), errors),
+    ]);
+    return { ...result, ids };
+  } catch {
+    // Sigue con un único fallback adicional.
   }
 
-  // Intento 2: HTML directo, priorizando título/precio/foto visibles.
-  for (const target of targets) {
-    try {
-      const r = await fetchText(fetchImpl, target, { timeoutMs: options.timeoutMs });
-      return { ...extractProductFromHtml(r.text, r.finalUrl), method: 'direct-html' };
-    } catch (error) {
-      errors.push(`direct:${error.message}`);
-    }
+  try {
+    const result = await wrapAttempt(
+      'cors-proxy',
+      attemptCorsProxy(fetchImpl, normalized, fallbackTimeoutMs),
+      errors,
+    );
+    return { ...result, ids };
+  } catch {
+    const error = new Error('No se pudieron obtener título, precio e imagen de forma confiable.');
+    error.causes = errors;
+    throw error;
   }
-
-  // Intento 3: proxy HTML gratuito.
-  for (const target of targets) {
-    try {
-      const proxyUrl = `https://cors.tools/proxy?url=${encodeURIComponent(target)}`;
-      const r = await fetchText(fetchImpl, proxyUrl, { timeoutMs: options.timeoutMs ?? 18000 });
-      return { ...extractProductFromHtml(r.text, r.finalUrl), method: 'cors-proxy' };
-    } catch (error) {
-      errors.push(`cors-proxy:${error.message}`);
-    }
-  }
-
-  // Intento 4: lector renderizado gratuito alternativo.
-  for (const target of targets) {
-    try {
-      const readUrl = `https://cors.tools/read?url=${encodeURIComponent(target)}&format=markdown&render=true`;
-      const r = await fetchText(fetchImpl, readUrl, { timeoutMs: options.timeoutMs ?? 20000 });
-      return { ...extractProductFromMarkdown(r.text, r.finalUrl), method: 'cors-read' };
-    } catch (error) {
-      errors.push(`cors-read:${error.message}`);
-    }
-  }
-
-  const e = new Error('No se pudieron obtener title, price e image de forma confiable.');
-  e.causes = errors;
-  throw e;
 }
-

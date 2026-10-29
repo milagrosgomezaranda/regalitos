@@ -1,16 +1,13 @@
-# Validación final
+# Validación
 
-Esta versión elimina los endpoints y fallbacks anteriores para evitar rutas duplicadas y esperas encadenadas.
+- `api/product.js`: único endpoint del importador.
+- `mercadolibre-importer.mjs`: extracción de IDs, HTML visible, Open Graph/JSON-LD y lectores renderizados.
+- Sin Playwright, Chromium, Gemini, OAuth ni API keys.
+- Jina Reader y cors.tools se ejecutan en paralelo para reducir tiempo de espera.
+- Se prioriza el precio actual visible y se descarta el precio anterior tachado.
+- La imagen debe ser una URL `mlstatic.com` y no un logo.
+- Las páginas de verificación/CAPTCHA se rechazan.
+- Tests locales: 8/8 PASS.
+- Sintaxis de API, frontend e importador: OK.
 
-Estructura usada por el importador:
-
-- `api/product.js`: único endpoint serverless.
-- `mercadolibre-playwright.mjs`: locators y extracción reutilizable.
-- `src/main.js`: llama solamente a `/api/product` y aborta a los 22 segundos.
-
-El endpoint devuelve siempre uno de estos estados:
-
-- HTTP 200 + `ok: true` con `title`, `price`, `image`.
-- HTTP 4xx/5xx + `ok: false`, `error`, `stage` y `elapsedMs`.
-
-No se considera éxito una página de verificación/CAPTCHA, un título genérico, una imagen que no sea de `mlstatic.com` o una respuesta incompleta.
+La validación live contra Mercado Libre debe completarse desde el deployment de Vercel, porque este runtime de trabajo no permite navegar hacia esas fichas reales.

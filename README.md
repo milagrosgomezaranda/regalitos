@@ -1,34 +1,47 @@
 # Regalitos
 
-Versión consolidada del proyecto.
+Versión consolidada del proyecto con importación liviana de productos de Mercado Libre.
 
-## Importador de Mercado Libre
+## Importador de producto
 
-La aplicación usa un único endpoint:
+El frontend llama a un único endpoint:
 
-`GET /api/product?url=<URL_DE_MERCADO_LIBRE>`
+`GET /api/product?url=<URL_MERCADOLIBRE>`
 
-Ese endpoint abre la ficha con Chromium + Playwright y devuelve únicamente cuando obtuvo los tres datos requeridos:
+El backend no levanta Chromium ni usa API keys. Prueba en paralelo:
 
-```json
-{
-  "ok": true,
-  "title": "...",
-  "price": 123456,
-  "image": "https://...mlstatic.com/...",
-  "method": "playwright-dom"
-}
-```
+1. Jina Reader con renderizado de navegador.
+2. `cors.tools/read?render=true`.
+3. HTML directo.
 
-Si Mercado Libre bloquea la navegación, si Chromium no inicia o si falta alguno de los tres campos, devuelve un JSON de error con `stage` para identificar el punto exacto del fallo. El frontend corta la espera a los 22 segundos y siempre vuelve a habilitar el botón.
+Si los tres fallan, usa `cors.tools/proxy` como último fallback.
+
+Solo devuelve éxito cuando obtiene los tres datos requeridos:
+
+- `title`
+- `price`
+- `image`
+
+La imagen debe pertenecer a `mlstatic.com` y no puede ser un logo. Las páginas de verificación/CAPTCHA se rechazan.
 
 ## Vercel
 
-Configuración esperada:
+Mantener:
 
-- Framework Preset: Vite
-- Build Command: `npm run build`
+- Framework Preset: `Vite`
 - Output Directory: `dist`
-- Node.js: 22.x
 
-No configurar un Output Directory distinto ni crear reglas manuales para las funciones de `api/`.
+No requiere variables de entorno nuevas para el importador.
+
+Las variables existentes de Supabase se mantienen:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+## Comandos
+
+```bash
+npm install
+npm test
+npm run build
+```
