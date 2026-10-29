@@ -387,35 +387,107 @@ export function extractProductFromHtml(html, finalUrl = '') {
   return { title, price, image, missing };
 }
 
-function browserlessError(status, bodyText = '') {
-  if (status === 401 || status === 403) {
-    return new Error('Browserless rechazó BROWSERLESS_TOKEN. Revisá la variable de entorno en Vercel.');
-  }
-  if (status === 429) return new Error('Browserless no tiene unidades/concurrencia disponibles en este momento.');
-  const cleaned = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 320);
-  return new Error(`Browserless respondió HTTP ${status}${cleaned ? `: ${cleaned}` : ''}`);
+
+function normalizeProviderImage(value) {
+  const candidate = typeof value === 'string' ? value : value?.url;
+  const normalized = normalizeImageCandidate(candidate);
+  return isValidProductImage(normalized) ? normalized : null;
 }
 
-async function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
+function normalizeProviderTitle(value) {
+  return normalizeTitle(value);
+}
+
+function normalizeMetadataPayload(payload = {}) {
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  const image = normalizeProviderImage(data?.image)
+    || normalizeProviderImage(data?.og?.['og:image'])
+    || normalizeProviderImage(data?.twitter?.['twitter:image'])
+    || null;
+  const title = normalizeProviderTitle(data?.title)
+    || normalizeProviderTitle(data?.og?.['og:title'])
+    || normalizeProviderTitle(data?.twitter?.['twitter:title'])
+    || null;
+  const price = normalizePrice(
+    data?.price
+      ?? data?.og?.['product:price:amount']
+      ?? data?.og?.['og:price:amount']
+      ?? null,
+  );
+  return { title, price, image };
+}
+
+async function fetchWithTimeout(fetchImpl, url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetchImpl(url, { ...options, signal: controller.signal });
-  } catch (error) {
-    if (error?.name === 'AbortError') throw new Error('Browserless tardó demasiado y se canceló la consulta.');
-    throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function mergeProducts(primary, fallback) {
-  const title = normalizeTitle(primary?.title) || normalizeTitle(fallback?.title) || null;
-  const price = normalizePrice(primary?.price) || normalizePrice(fallback?.price) || null;
-  const imageCandidates = [primary?.image, fallback?.image]
-    .map(normalizeImageCandidate)
-    .filter(Boolean);
-  const image = imageCandidates.find(isValidProductImage) || null;
+async function tryDirectPreviewHtml(fetchImpl, target, timeoutMs) {
+  try {
+    const response = await fetchWithTimeout(fetchImpl, target, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'facebookexternalhit/1.1 (+https://www.facebook.com/externalhit_uatext.php)',
+        'Accept-Language': 'es-AR,es;q=0.9',
+      },
+    }, timeoutMs);
+    if (!response.ok) return null;
+    const html = await response.text();
+    if (!html || looksBlocked(html, response.url || target)) return null;
+    return extractProductFromHtml(html, response.url || target);
+  } catch {
+    return null;
+  }
+}
+
+async function tryLinkMetadata(fetchImpl, target, timeoutMs) {
+  try {
+    const endpoint = new URL('https://api.linkmetadata.com/v1/metadata');
+    endpoint.searchParams.set('url', target);
+    endpoint.searchParams.set('prefer', 'og');
+    const response = await fetchWithTimeout(fetchImpl, endpoint, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }, timeoutMs);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return normalizeMetadataPayload(payload);
+  } catch {
+    return null;
+  }
+}
+
+async function tryMicrolink(fetchImpl, target, timeoutMs) {
+  try {
+    const endpoint = new URL('https://api.microlink.io/');
+    endpoint.searchParams.set('url', target);
+    endpoint.searchParams.set('meta', 'true');
+    endpoint.searchParams.set('filter', 'title,image.url,url');
+    const response = await fetchWithTimeout(fetchImpl, endpoint, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }, timeoutMs);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    if (payload?.status && payload.status !== 'success') return null;
+    return normalizeMetadataPayload(payload);
+  } catch {
+    return null;
+  }
+}
+
+function mergeProducts(...products) {
+  const valid = products.filter(Boolean);
+  const title = valid.map((p) => normalizeProviderTitle(p.title)).find(Boolean) || null;
+  const price = valid.map((p) => normalizePrice(p.price)).find(Boolean) || null;
+  const image = valid.map((p) => normalizeProviderImage(p.image)).find(Boolean) || null;
   return {
     title,
     price,
@@ -424,226 +496,48 @@ function mergeProducts(primary, fallback) {
   };
 }
 
-async function requestBrowserlessSession(fetchImpl, target, options = {}) {
-  const token = options.browserlessToken || process.env.BROWSERLESS_TOKEN;
-  if (!token) {
-    const error = new Error('Falta BROWSERLESS_TOKEN en las Environment Variables de Vercel.');
-    error.code = 'BROWSERLESS_CONFIG';
-    throw error;
-  }
-
-  const baseUrl = String(options.browserlessBaseUrl || process.env.BROWSERLESS_BASE_URL || 'https://production-sfo.browserless.io').replace(/\/$/, '');
-  const timeoutMs = options.timeoutMs ?? 35000;
-  const ttl = Math.min(Math.max(options.browserlessTtlMs ?? 30000, 10000), 60000);
-
-  // Browserless /unblock: proxy y ubicación van en query string.
-  // El body contiene SOLO campos documentados por /unblock.
-  const params = new URLSearchParams({
-    token,
-    proxy: 'residential',
-    proxyCountry: 'ar',
-    proxySticky: 'true',
-    timeout: String(Math.min(timeoutMs, 60000)),
-  });
-
-  const body = {
-    url: target,
-    content: true,
-    cookies: false,
-    screenshot: false,
-    browserWSEndpoint: true,
-    ttl,
-  };
-
-  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/chromium/unblock?${params.toString()}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-    body: JSON.stringify(body),
-  }, timeoutMs);
-
-  const raw = await response.text();
-  if (!response.ok) throw browserlessError(response.status, raw);
-
-  let payload;
-  try { payload = JSON.parse(raw); }
-  catch { throw new Error('Browserless devolvió una respuesta JSON inválida.'); }
-
-  if (!payload?.browserWSEndpoint && !payload?.content) {
-    throw new Error('Browserless no devolvió navegador remoto ni HTML renderizado.');
-  }
-
-  return { token, payload, queryParams: params.toString() };
-}
-
-function withBrowserlessSessionParams(wsEndpoint, queryParams) {
-  const endpoint = String(wsEndpoint || '').trim();
-  if (!endpoint) return null;
-  const rawParams = String(queryParams || '').replace(/^\?/, '');
-  if (!rawParams) return endpoint;
-  const separator = endpoint.includes('?') ? '&' : '?';
-  return `${endpoint}${separator}${rawParams}`;
-}
-
-async function extractFromRemotePage(page) {
-  // No esperamos un selector único: Mercado Libre usa variantes de DOM/A-B tests.
-  // Una pausa breve permite que se hidrate precio/galería cuando ya se abrió la ficha.
-  await page.waitForTimeout(1200).catch(() => {});
-
-  return await page.evaluate(() => {
-    const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-    const meta = (selector) => document.querySelector(selector)?.getAttribute('content')?.trim() || null;
-
-    const normalizePriceText = (value) => {
-      if (!value) return null;
-      let raw = String(value).replace(/[^\d.,-]/g, '');
-      if (!raw) return null;
-      if (raw.includes(',')) raw = raw.replace(/\./g, '').replace(',', '.');
-      else if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) raw = raw.replace(/\./g, '');
-      const n = Number(raw);
-      return Number.isFinite(n) && n > 0 ? n : null;
-    };
-
-    const jsonLdProducts = [];
-    for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        const parsed = JSON.parse(node.textContent || '');
-        const visit = (value) => {
-          if (Array.isArray(value)) return value.forEach(visit);
-          if (!value || typeof value !== 'object') return;
-          const types = Array.isArray(value['@type']) ? value['@type'] : [value['@type']];
-          if (types.some((t) => String(t || '').toLowerCase() === 'product')) jsonLdProducts.push(value);
-          Object.values(value).forEach(visit);
-        };
-        visit(parsed);
-      } catch {}
-    }
-    const productLd = jsonLdProducts[0] || null;
-    const offers = Array.isArray(productLd?.offers) ? productLd.offers[0] : productLd?.offers;
-
-    const title = text(document.querySelector('h1.ui-pdp-title'))
-      || text(document.querySelector('h1[itemprop="name"]'))
-      || text(document.querySelector('[itemprop="name"]'))
-      || meta('meta[property="og:title"]')
-      || meta('meta[name="twitter:title"]')
-      || productLd?.name
-      || document.title
-      || null;
-
-    const priceMeta = document.querySelector('#price .ui-pdp-price__second-line meta[itemprop="price"]')?.getAttribute('content')
-      || document.querySelector('#price meta[itemprop="price"]')?.getAttribute('content')
-      || document.querySelector('meta[itemprop="price"]')?.getAttribute('content')
-      || meta('meta[property="product:price:amount"]')
-      || meta('meta[property="og:price:amount"]')
-      || offers?.price
-      || offers?.lowPrice
-      || null;
-
-    let price = normalizePriceText(priceMeta);
-    if (!price) {
-      const current = document.querySelector('#price .ui-pdp-price__second-line')
-        || document.querySelector('.ui-pdp-price__second-line');
-      const fraction = text(current?.querySelector('.andes-money-amount__fraction'));
-      const cents = text(current?.querySelector('.andes-money-amount__cents'));
-      if (fraction) price = normalizePriceText(cents ? `${fraction},${cents}` : fraction);
-    }
-
-    const imageEl = document.querySelector('figure.ui-pdp-gallery__figure img.ui-pdp-image')
-      || document.querySelector('.ui-pdp-gallery__figure img')
-      || document.querySelector('img.ui-pdp-image');
-
-    const pickSrcset = (value) => {
-      if (!value) return null;
-      const entries = String(value).split(',').map((part) => part.trim().split(/\s+/)[0]).filter(Boolean);
-      return entries.length ? entries[entries.length - 1] : null;
-    };
-
-    const ldImage = Array.isArray(productLd?.image) ? productLd.image[0] : productLd?.image;
-    const image = imageEl?.getAttribute('data-zoom')
-      || pickSrcset(imageEl?.getAttribute('srcset'))
-      || imageEl?.getAttribute('data-src')
-      || imageEl?.getAttribute('src')
-      || meta('meta[property="og:image"]')
-      || meta('meta[name="twitter:image"]')
-      || (typeof ldImage === 'string' ? ldImage : ldImage?.url || ldImage?.contentUrl)
-      || null;
-
-    return { title, price, image, url: location.href, documentTitle: document.title };
-  });
-}
-
-async function extractViaBrowserlessRemote(session, target, options = {}) {
-  if (!session?.payload?.browserWSEndpoint) return null;
-
-  let browser;
-  try {
-    const connectImpl = options.connectBrowser;
-    if (connectImpl) {
-      browser = await connectImpl(withBrowserlessSessionParams(session.payload.browserWSEndpoint, session.queryParams));
-    } else {
-      const { chromium } = await import('playwright-core');
-      browser = await chromium.connectOverCDP(withBrowserlessSessionParams(session.payload.browserWSEndpoint, session.queryParams), { timeout: 12000 });
-    }
-
-    const contexts = browser.contexts();
-    let pages = contexts.flatMap((context) => context.pages());
-    let page = pages.find((candidate) => {
-      try { return new URL(candidate.url()).hostname.includes('mercadolibre.com.ar'); }
-      catch { return false; }
-    }) || pages.find((candidate) => /^https?:/i.test(candidate.url())) || pages[0];
-
-    if (!page) {
-      const context = contexts[0] || await browser.newContext();
-      page = await context.newPage();
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 12000 });
-    }
-
-    const raw = await extractFromRemotePage(page);
-    return {
-      title: normalizeTitle(raw?.title),
-      price: normalizePrice(raw?.price),
-      image: isValidProductImage(raw?.image) ? normalizeImageCandidate(raw.image) : null,
-      debug: { finalUrl: raw?.url || null, documentTitle: raw?.documentTitle || null },
-    };
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
-}
-
 export async function importMercadoLibreProduct(input, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch no está disponible en este runtime.');
 
   const ids = extractMercadoLibreIds(input);
   const normalized = normalizeMercadoLibreUrl(input);
-  const session = await requestBrowserlessSession(fetchImpl, normalized, options);
+  const attempts = [];
 
-  let htmlProduct = null;
-  if (typeof session.payload?.content === 'string' && session.payload.content) {
-    try { htmlProduct = extractProductFromHtml(session.payload.content, normalized); }
-    catch { htmlProduct = null; }
+  const direct = await tryDirectPreviewHtml(fetchImpl, normalized, options.directTimeoutMs ?? 4500);
+  attempts.push({ source: 'direct-preview', ok: Boolean(direct), hasImage: Boolean(direct?.image) });
+  if (direct?.image && direct?.title && direct?.price) {
+    return { ...direct, method: 'direct-preview', ids, debug: undefined };
   }
 
-  let remoteProduct = null;
-  let remoteError = null;
-  try {
-    remoteProduct = await extractViaBrowserlessRemote(session, normalized, options);
-  } catch (error) {
-    remoteError = error;
+  const linkMetadata = await tryLinkMetadata(fetchImpl, normalized, options.metadataTimeoutMs ?? 8000);
+  attempts.push({ source: 'linkmetadata', ok: Boolean(linkMetadata), hasImage: Boolean(linkMetadata?.image) });
+
+  let merged = mergeProducts(direct, linkMetadata);
+  if (merged.image && merged.title) {
+    return {
+      ...merged,
+      method: direct?.image ? 'direct-preview+linkmetadata' : 'linkmetadata',
+      ids,
+      debug: merged.missing.length ? { attempts } : undefined,
+    };
   }
 
-  const product = mergeProducts(remoteProduct, htmlProduct);
-  if (!product.title && !product.price && !product.image) {
-    const suffix = remoteError?.message ? ` Conexión al navegador remoto: ${remoteError.message}` : '';
-    throw new Error(`Browserless abrió la ficha, pero no encontró datos de producto utilizables.${suffix}`);
+  const microlink = await tryMicrolink(fetchImpl, normalized, options.microlinkTimeoutMs ?? 12000);
+  attempts.push({ source: 'microlink', ok: Boolean(microlink), hasImage: Boolean(microlink?.image) });
+  merged = mergeProducts(direct, linkMetadata, microlink);
+
+  if (!merged.image) {
+    const error = new Error('No se pudo obtener una foto de producto desde los metadatos del enlace.');
+    error.code = 'NO_PRODUCT_IMAGE';
+    error.debug = { attempts };
+    throw error;
   }
 
   return {
-    ...product,
-    method: remoteProduct ? 'browserless-unblock+remote-dom' : 'browserless-unblock-html',
+    ...merged,
+    method: microlink?.image ? 'metadata+microlink' : 'metadata',
     ids,
-    debug: product.missing.length ? {
-      ...(remoteProduct?.debug || {}),
-      remoteError: remoteError?.message || null,
-    } : undefined,
+    debug: merged.missing.length ? { attempts } : undefined,
   };
 }
